@@ -9,6 +9,8 @@ export interface ToastMessage {
   from: string;
   text: string;
   at: number;
+  /** Contact photo (data: URL) when the site sent one. */
+  image?: string;
 }
 
 /** How long each message stays on the island. */
@@ -27,7 +29,8 @@ export interface Toasts {
 export function createToasts(onChange: () => void): Toasts {
   const from = h("span", { class: "tw-from" });
   const text = h("span", { class: "tw-text" });
-  const icon = h("div", { class: "tw-icon" }, svg(ICONS.bubble, 11));
+  const photo = h("img", { class: "tw-photo", alt: "" }) as HTMLImageElement;
+  const icon = h("div", { class: "tw-icon" }, svg(ICONS.bubble, 11), photo);
   const el = h("div", { id: "toast" }, icon, h("div", { class: "tw-body" }, from, text));
 
   const queue: ToastMessage[] = [];
@@ -41,6 +44,9 @@ export function createToasts(onChange: () => void): Toasts {
     if (current) {
       from.textContent = current.from;
       text.textContent = current.text || "New message";
+      if (current.image) photo.src = current.image;
+      else photo.removeAttribute("src");
+      icon.classList.toggle("has-photo", Boolean(current.image));
       el.classList.remove("in");
       void el.offsetWidth; // restart the entrance animation
       el.classList.add("in");

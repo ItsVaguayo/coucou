@@ -343,6 +343,21 @@ export class Island {
     this.fsm.reveal();
   }
 
+  /** A browser is the focused window (X11): fade so its tabs show through. */
+  private browserFocus = false;
+
+  setBrowserFocus(on: boolean) {
+    this.browserFocus = on;
+    this.updateDim();
+  }
+
+  /** Faded only while nobody is using it: the pointer over it or an open card wins. */
+  private updateDim() {
+    const dim =
+      this.browserFocus && !this.wasInIsland && State.mode !== "expanded" && !this.toasts.active;
+    this.islandEl.classList.toggle("dim", dim);
+  }
+
   /** A WhatsApp message: on the compact island for a few seconds. */
   showMessage(m: ToastMessage) {
     if (State.paused) return;
@@ -635,6 +650,7 @@ export class Island {
       }
     }
     this.wasInIsland = inIsland;
+    this.updateDim();
 
     // Bot hover → love
     const overBot = State.mode === "expanded" && State.stateOverride == null && this.isBotHit(x, y);
@@ -922,6 +938,7 @@ export class Island {
       }
     }
 
+    this.updateDim();
     this.nowPlaying.sync(compact && !toastOn);
     this.toasts.sync(compact);
     this.engine.headphones = spotifyPlaying();

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use gtk::gio;
-use gtk::glib::{ToVariant, Variant};
+use gtk::glib::{self, ToVariant, Variant};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -88,6 +88,9 @@ pub struct ChatMessage {
     pub from: String,
     pub text: String,
     pub at: u64,
+    /// The picture the site attached (WhatsApp: the contact's photo), as a
+    /// data: URL, or empty.
+    pub image: String,
 }
 
 static WHATSAPP: Mutex<VecDeque<ChatMessage>> = Mutex::new(VecDeque::new());
@@ -158,15 +161,12 @@ fn on_notify(app: &AppHandle, body: &Variant) {
     let s = |i: usize| body.child_value(i).str().unwrap_or_default().to_string();
     let (app_name, summary, text) = (s(0), s(3), s(4));
     let mut desktop_entry = String::new();
-    for_each_entry(&body.child_value(6), |key, value| {
-        if key == "desktop-entry" {
-            desktop_entry = value.str().unwrap_or_default().to_string();
-        }
+    let mut image: Option<Variant> = None;
+    for_each_entry(&body.child_value(6), |key, value| match key {
+        "desktop-entry" => desktop_entry = value.str().unwrap_or_default().to_string(),
+        "image-data" | "image_data" | "icon_data" => image = Some(value),
+        _ => {}
     });
-    crate::log::line(format!(
-        "notify app={app_name:?} entry={desktop_entry:?} summary={summary:?} body_len={}",
-        text.len()
-    ));
     let Some((from, text)) = whatsapp_message(&app_name, &desktop_entry, &summary, &text) else { return };
 
     let at = now_ms();
@@ -180,11 +180,16 @@ fn on_notify(app: &AppHandle, body: &Variant) {
         *last = Some((from.clone(), text.clone(), at));
     }
 
-    let message = ChatMessage { from, text, at };
+    let image = image.as_ref().and_then(image_data_url).unwrap_or_default();
+    let message = ChatMessage { from, text, at, image };
     let messages: Vec<ChatMessage> = {
         let mut list = WHATSAPP.lock().unwrap();
         list.push_front(message.clone());
         list.truncate(WHATSAPP_KEEP);
+        // Pictures only for the rows the card shows.
+        for old in list.iter_mut().skip(3) {
+            old.image.clear();
+        }
         list.iter().cloned().collect()
     };
     emit(app, IntegrationUpdate {
@@ -196,32 +201,87 @@ fn on_notify(app: &AppHandle, body: &Variant) {
     let _ = app.emit_to(island::WINDOW_LABEL, "whatsapp", message);
 }
 
-/// Picks WhatsApp Web's notifications out of everything the browser sends.
-/// Returns (sender, text).
+/// Web notifications from the browser (or a WhatsApp desktop app). Firefox
+/// does not say which site sent one, so every site allowed to notify comes
+/// through; WhatsApp Web is the one that matters here, and it is told apart by
+/// what it sends: the contact as the title, the message as the body and the
+/// contact's photo as the picture. Returns (sender, text).
 fn whatsapp_message(app_name: &str, entry: &str, summary: &str, body: &str) -> Option<(String, String)> {
+    let app = app_name.to_lowercase();
+    let entry = entry.to_lowercase();
     let from_browser = ["firefox", "chrome", "chromium", "brave"]
         .iter()
-        .any(|b| app_name.to_lowercase().contains(b) || entry.to_lowercase().contains(b));
-    let whatsapp_app = app_name.to_lowercase().contains("whatsapp") || entry.to_lowercase().contains("whatsapp");
+        .any(|b| app.contains(b) || entry.contains(b));
+    let whatsapp_app = app.contains("whatsapp") || entry.contains("whatsapp") || app.contains("wasistlos");
     if !(from_browser || whatsapp_app) {
         return None;
     }
-    // Firefox puts the site on the body's first line ("web.whatsapp.com").
-    let mut lines = body.lines();
-    let first = lines.clone().next().unwrap_or_default().trim().to_lowercase();
-    let text = if first.contains("whatsapp.com") {
+    // Chrome puts the site on the body's first line; drop it.
+    let mut lines = body.lines().peekable();
+    if lines.peek().map(|l| l.trim().to_lowercase().ends_with(".com")).unwrap_or(false) {
         lines.next();
-        lines.collect::<Vec<_>>().join("\n")
-    } else if whatsapp_app {
-        body.to_string()
-    } else {
-        return None;
-    };
+    }
+    let text = lines.collect::<Vec<_>>().join("\n");
     let from = summary.trim();
     if from.is_empty() {
         return None;
     }
     Some((from.to_string(), strip_markup(text.trim())))
+}
+
+/// `image-data` is `(iiibiiay)`: width, height, rowstride, has_alpha,
+/// bits_per_sample, channels, pixels (RGB or RGBA). Wrapped as a 32-bit BMP,
+/// which the webview shows without any image library on our side.
+fn image_data_url(v: &Variant) -> Option<String> {
+    if v.n_children() < 7 {
+        return None;
+    }
+    let w = v.child_value(0).get::<i32>()? as usize;
+    let h = v.child_value(1).get::<i32>()? as usize;
+    let stride = v.child_value(2).get::<i32>()? as usize;
+    let bits = v.child_value(4).get::<i32>()?;
+    let channels = v.child_value(5).get::<i32>()? as usize;
+    let pixels = v.child_value(6).fixed_array::<u8>().ok()?.to_vec();
+    if w == 0 || h == 0 || w > 512 || h > 512 || bits != 8 || !(channels == 3 || channels == 4) {
+        return None;
+    }
+    if pixels.len() < stride * (h - 1) + w * channels {
+        return None;
+    }
+    // The island draws it at 22 px: 48 is plenty, and keeps the event small.
+    let step = w.max(h).div_ceil(48).max(1);
+    let (src_w, src_h) = (w, h);
+    let (w, h) = (src_w.div_ceil(step), src_h.div_ceil(step));
+    let data_len = w * h * 4;
+    let mut bmp = Vec::with_capacity(54 + 68 + data_len);
+    let header_len: u32 = 14 + 108; // BITMAPV4HEADER, for the alpha mask
+    let file_len = header_len as usize + data_len;
+    bmp.extend_from_slice(b"BM");
+    bmp.extend_from_slice(&(file_len as u32).to_le_bytes());
+    bmp.extend_from_slice(&0u32.to_le_bytes());
+    bmp.extend_from_slice(&header_len.to_le_bytes());
+    bmp.extend_from_slice(&108u32.to_le_bytes());
+    bmp.extend_from_slice(&(w as i32).to_le_bytes());
+    bmp.extend_from_slice(&(-(h as i32)).to_le_bytes()); // top-down rows
+    bmp.extend_from_slice(&1u16.to_le_bytes());
+    bmp.extend_from_slice(&32u16.to_le_bytes());
+    bmp.extend_from_slice(&3u32.to_le_bytes()); // BI_BITFIELDS
+    bmp.extend_from_slice(&(data_len as u32).to_le_bytes());
+    bmp.extend_from_slice(&[0u8; 16]); // resolution, palette
+    for mask in [0x00ff_0000u32, 0x0000_ff00, 0x0000_00ff, 0xff00_0000] {
+        bmp.extend_from_slice(&mask.to_le_bytes());
+    }
+    bmp.extend_from_slice(b" niW"); // LCS_WINDOWS_COLOR_SPACE
+    bmp.extend_from_slice(&[0u8; 48]); // endpoints + gamma
+    for y in 0..h {
+        let row = &pixels[(y * step).min(src_h - 1) * stride..];
+        for x in 0..w {
+            let p = &row[(x * step).min(src_w - 1) * channels..];
+            let a = if channels == 4 { p[3] } else { 255 };
+            bmp.extend_from_slice(&[p[2], p[1], p[0], a]);
+        }
+    }
+    Some(format!("data:image/bmp;base64,{}", glib::base64_encode(&bmp)))
 }
 
 /// The spec allows a little HTML in bodies; the island shows plain text.
@@ -262,6 +322,110 @@ mod x11 {
     }
 }
 
+/// The focused window's class over XCB, which reports X errors as values: a
+/// window closing between two requests must not reach the process-wide Xlib
+/// error handler that GDK owns.
+mod xcb {
+    use std::os::raw::{c_char, c_int, c_void};
+
+    #[repr(C)]
+    pub struct Cookie {
+        pub sequence: u32,
+    }
+    #[repr(C)]
+    pub struct AtomReply {
+        pub response_type: u8,
+        pub pad0: u8,
+        pub sequence: u16,
+        pub length: u32,
+        pub atom: u32,
+    }
+
+    #[link(name = "xcb")]
+    extern "C" {
+        pub fn xcb_connect(name: *const c_char, screen: *mut c_int) -> *mut c_void;
+        pub fn xcb_connection_has_error(c: *mut c_void) -> c_int;
+        pub fn xcb_intern_atom(c: *mut c_void, only_if_exists: u8, len: u16, name: *const c_char) -> Cookie;
+        pub fn xcb_intern_atom_reply(c: *mut c_void, cookie: Cookie, err: *mut *mut c_void) -> *mut AtomReply;
+        pub fn xcb_get_property(
+            c: *mut c_void, delete: u8, window: u32, property: u32, type_: u32, offset: u32, length: u32,
+        ) -> Cookie;
+        pub fn xcb_get_property_reply(c: *mut c_void, cookie: Cookie, err: *mut *mut c_void) -> *mut c_void;
+        pub fn xcb_get_property_value(reply: *const c_void) -> *const c_void;
+        pub fn xcb_get_property_value_length(reply: *const c_void) -> c_int;
+    }
+
+    pub const ATOM_WINDOW: u32 = 33;
+    pub const ATOM_STRING: u32 = 31;
+    pub const ATOM_WM_CLASS: u32 = 67;
+
+    pub struct Conn {
+        c: *mut c_void,
+        active_atom: u32,
+    }
+
+    impl Conn {
+        pub fn open() -> Option<Conn> {
+            unsafe {
+                let c = xcb_connect(std::ptr::null(), std::ptr::null_mut());
+                if c.is_null() || xcb_connection_has_error(c) != 0 {
+                    return None;
+                }
+                let name = b"_NET_ACTIVE_WINDOW";
+                let cookie = xcb_intern_atom(c, 1, name.len() as u16, name.as_ptr() as *const c_char);
+                let mut err = std::ptr::null_mut();
+                let reply = xcb_intern_atom_reply(c, cookie, &mut err);
+                if !err.is_null() {
+                    libc::free(err);
+                }
+                if reply.is_null() {
+                    return None;
+                }
+                let atom = (*reply).atom;
+                libc::free(reply as *mut c_void);
+                (atom != 0).then_some(Conn { c, active_atom: atom })
+            }
+        }
+
+        fn property(&self, window: u32, prop: u32, ty: u32, len: u32) -> Option<Vec<u8>> {
+            unsafe {
+                let cookie = xcb_get_property(self.c, 0, window, prop, ty, 0, len);
+                let mut err = std::ptr::null_mut();
+                let reply = xcb_get_property_reply(self.c, cookie, &mut err);
+                if !err.is_null() {
+                    libc::free(err);
+                }
+                if reply.is_null() {
+                    return None;
+                }
+                let n = xcb_get_property_value_length(reply).max(0) as usize;
+                let data = std::slice::from_raw_parts(xcb_get_property_value(reply) as *const u8, n).to_vec();
+                libc::free(reply);
+                Some(data)
+            }
+        }
+
+        /// WM_CLASS of the focused window, lowercased ("firefox", "google-chrome"…).
+        pub fn active_class(&self, root: u32) -> Option<String> {
+            let win = self.property(root, self.active_atom, ATOM_WINDOW, 1)?;
+            let win = u32::from_ne_bytes(win.get(..4)?.try_into().ok()?);
+            if win == 0 {
+                return Some(String::new());
+            }
+            let class = self.property(win, ATOM_WM_CLASS, ATOM_STRING, 64)?;
+            // "instance\0Class\0": both halves are worth matching.
+            Some(String::from_utf8_lossy(&class).replace('\0', " ").to_lowercase())
+        }
+    }
+}
+
+/// Is the focused window a web browser?
+fn is_browser(class: &str) -> bool {
+    ["firefox", "chrome", "chromium", "brave", "vivaldi", "opera", "microsoft-edge"]
+        .iter()
+        .any(|b| class.contains(b))
+}
+
 /// Reads the pointer ~30 times a second while the island is on screen and
 /// sends it as the same `cursor` event the Windows poll sends. Parked, like
 /// that poll, while the island is hidden. Wayland has no global pointer, so
@@ -280,12 +444,31 @@ fn spawn_eye_poll(app: AppHandle, gate: Arc<PollGate>) {
             return;
         }
         let root = unsafe { x11::XDefaultRootWindow(display) };
+        let focus = xcb::Conn::open();
         log::line("eyes follow the pointer across the screen (X11)");
         let mut last = (i32::MIN, i32::MIN);
         loop {
             gate.wait_until_active();
+            // Re-announced on every wake: the island may have missed changes.
+            let mut last_browser: Option<bool> = None;
+            let mut ticks: u32 = 0;
             while gate.is_active() {
                 std::thread::sleep(Duration::from_millis(33));
+
+                // Twice a second: is a browser in front? The island fades so the
+                // tabs under it show through.
+                ticks = ticks.wrapping_add(1);
+                if ticks % 15 == 1 {
+                    if let Some(class) = focus.as_ref().and_then(|f| f.active_class(root as u32)) {
+                        let browser = is_browser(&class);
+                        if last_browser != Some(browser) {
+                            last_browser = Some(browser);
+                            log::line(format!("focus: {class:?} → browser={browser}"));
+                            let _ = app.emit_to(island::WINDOW_LABEL, "browser-focus", browser);
+                        }
+                    }
+                }
+
                 let (mut r, mut c, mut rx, mut ry, mut wx, mut wy, mut mask) = (0, 0, 0, 0, 0, 0, 0);
                 let ok = unsafe {
                     x11::XQueryPointer(display, root, &mut r, &mut c, &mut rx, &mut ry, &mut wx, &mut wy, &mut mask)

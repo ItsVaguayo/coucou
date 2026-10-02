@@ -24,7 +24,8 @@ async function main() {
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
 
-  await onEvent<{ from: string; text: string; at: number }>("whatsapp", (m) => island.showMessage(m));
+  await onEvent<boolean>("browser-focus", (on) => island.setBrowserFocus(on));
+  await onEvent<{ from: string; text: string; at: number; image?: string }>("whatsapp", (m) => island.showMessage(m));
 
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onPolledCursor(x, y));
 

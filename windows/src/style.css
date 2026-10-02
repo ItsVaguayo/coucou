@@ -75,6 +75,15 @@ body {
   will-change: width, height, transform;
 }
 
+/* A browser has focus: fade so the tabs underneath show through. */
+#island {
+  transition: opacity 0.3s ease-in-out;
+}
+
+#island.dim {
+  opacity: 0.3;
+}
+
 #island-clip {
   position: absolute;
   inset: 0;
@@ -1608,6 +1617,43 @@ input[type="range"]::-webkit-slider-thumb {
   background: #25d366;
   color: #fff;
   box-shadow: 0 0 10px #25d36666;
+}
+
+.tw-icon {
+  position: relative;
+}
+
+.tw-photo {
+  display: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* With the contact's photo the green bubble becomes a small badge. */
+.tw-icon.has-photo {
+  background: transparent;
+  box-shadow: none;
+}
+
+.tw-icon.has-photo .tw-photo {
+  display: block;
+}
+
+.tw-icon.has-photo svg {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  z-index: 1;
+  width: 11px;
+  height: 11px;
+  padding: 2px;
+  border-radius: 50%;
+  background: #25d366;
+  box-shadow: 0 0 0 1.5px #000;
 }
 
 .tw-body {
