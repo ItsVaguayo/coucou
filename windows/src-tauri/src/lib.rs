@@ -297,6 +297,15 @@ fn media_control(action: String) {
     let _ = action;
 }
 
+/// Clicking a WhatsApp message on the island.
+#[tauri::command]
+fn open_whatsapp() {
+    #[cfg(target_os = "linux")]
+    desktop::open_whatsapp();
+    #[cfg(not(target_os = "linux"))]
+    platform::open_url("https://web.whatsapp.com");
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -413,6 +422,7 @@ pub fn run() {
             open_settings_window,
             set_paused,
             media_control,
+            open_whatsapp,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();

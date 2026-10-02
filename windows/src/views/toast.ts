@@ -26,12 +26,21 @@ export interface Toasts {
   sync(compact: boolean): void;
 }
 
-export function createToasts(onChange: () => void): Toasts {
+export function createToasts(onChange: () => void, onOpen: () => void): Toasts {
   const from = h("span", { class: "tw-from" });
   const text = h("span", { class: "tw-text" });
   const photo = h("img", { class: "tw-photo", alt: "" }) as HTMLImageElement;
   const icon = h("div", { class: "tw-icon" }, svg(ICONS.bubble, 11), photo);
   const el = h("div", { id: "toast" }, icon, h("div", { class: "tw-body" }, from, text));
+
+  el.title = "Open WhatsApp";
+  // The compact island opens on mousedown; a click on a message must not.
+  el.addEventListener("mousedown", (e) => e.stopPropagation());
+  el.addEventListener("click", (e) => {
+    e.stopPropagation();
+    onOpen();
+    next();
+  });
 
   const queue: ToastMessage[] = [];
   let current: ToastMessage | null = null;
@@ -67,7 +76,9 @@ export function createToasts(onChange: () => void): Toasts {
       if (!current) next();
     },
     sync(compact: boolean) {
-      el.style.opacity = compact && current ? "1" : "0";
+      const on = compact && current != null;
+      el.style.opacity = on ? "1" : "0";
+      el.style.pointerEvents = on ? "auto" : "none";
     },
   };
 }

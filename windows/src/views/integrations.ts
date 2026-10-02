@@ -104,7 +104,7 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         class: "link-btn",
         style: `color:${task.color}d9`,
         text: "Open WhatsApp Web",
-        onclick: () => void Bridge.openUrl("https://web.whatsapp.com"),
+        onclick: () => void Bridge.openWhatsApp(),
       }),
     );
   } else if (task.id === "integration_spotify") {
@@ -472,7 +472,7 @@ function whatsappCard(): HTMLElement {
         {
           class: i === 0 ? "wa-row first" : "wa-row",
           title: "Open WhatsApp Web",
-          onclick: () => void Bridge.openUrl("https://web.whatsapp.com"),
+          onclick: () => void Bridge.openWhatsApp(),
         },
         h("span", { class: "wa-from", text: String(m.from ?? "") }),
         h("span", { class: "wa-text", text: String(m.text ?? "") }),

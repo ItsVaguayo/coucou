@@ -353,6 +353,25 @@ mod xcb {
         pub fn xcb_get_property_reply(c: *mut c_void, cookie: Cookie, err: *mut *mut c_void) -> *mut c_void;
         pub fn xcb_get_property_value(reply: *const c_void) -> *const c_void;
         pub fn xcb_get_property_value_length(reply: *const c_void) -> c_int;
+        pub fn xcb_send_event(
+            c: *mut c_void, propagate: u8, destination: u32, event_mask: u32, event: *const c_char,
+        ) -> Cookie;
+        pub fn xcb_flush(c: *mut c_void) -> c_int;
+    }
+
+    unsafe fn intern(c: *mut c_void, name: &str) -> u32 {
+        let cookie = xcb_intern_atom(c, 0, name.len() as u16, name.as_ptr() as *const c_char);
+        let mut err = std::ptr::null_mut();
+        let reply = xcb_intern_atom_reply(c, cookie, &mut err);
+        if !err.is_null() {
+            libc::free(err);
+        }
+        if reply.is_null() {
+            return 0;
+        }
+        let atom = (*reply).atom;
+        libc::free(reply as *mut c_void);
+        atom
     }
 
     pub const ATOM_WINDOW: u32 = 33;
@@ -364,6 +383,10 @@ mod xcb {
         active_atom: u32,
     }
 
+    // An xcb connection is thread-safe by design (unlike an Xlib Display).
+    unsafe impl Send for Conn {}
+    unsafe impl Sync for Conn {}
+
     impl Conn {
         pub fn open() -> Option<Conn> {
             unsafe {
@@ -371,19 +394,55 @@ mod xcb {
                 if c.is_null() || xcb_connection_has_error(c) != 0 {
                     return None;
                 }
-                let name = b"_NET_ACTIVE_WINDOW";
-                let cookie = xcb_intern_atom(c, 1, name.len() as u16, name.as_ptr() as *const c_char);
-                let mut err = std::ptr::null_mut();
-                let reply = xcb_intern_atom_reply(c, cookie, &mut err);
-                if !err.is_null() {
-                    libc::free(err);
-                }
-                if reply.is_null() {
-                    return None;
-                }
-                let atom = (*reply).atom;
-                libc::free(reply as *mut c_void);
+                let atom = intern(c, "_NET_ACTIVE_WINDOW");
                 (atom != 0).then_some(Conn { c, active_atom: atom })
+            }
+        }
+
+        pub fn atom(&self, name: &str) -> u32 {
+            unsafe { intern(self.c, name) }
+        }
+
+        /// Every top-level window the window manager knows about.
+        pub fn client_list(&self, root: u32) -> Vec<u32> {
+            let atom = self.atom("_NET_CLIENT_LIST");
+            self.property(root, atom, ATOM_WINDOW, 4096)
+                .unwrap_or_default()
+                .chunks_exact(4)
+                .map(|b| u32::from_ne_bytes([b[0], b[1], b[2], b[3]]))
+                .collect()
+        }
+
+        /// The window's title (UTF-8), as the window manager shows it.
+        pub fn title(&self, window: u32) -> String {
+            let (name, utf8) = (self.atom("_NET_WM_NAME"), self.atom("UTF8_STRING"));
+            self.property(window, name, utf8, 1024)
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+                .unwrap_or_default()
+        }
+
+        pub fn class(&self, window: u32) -> String {
+            self.property(window, ATOM_WM_CLASS, ATOM_STRING, 64)
+                .map(|b| String::from_utf8_lossy(&b).replace('\0', " ").to_lowercase())
+                .unwrap_or_default()
+        }
+
+        /// Asks the window manager to raise and focus `window`, the way a
+        /// taskbar does (source indication 2: a pager, which GNOME honours).
+        pub fn activate(&self, root: u32, window: u32) {
+            let mut ev = [0u8; 32];
+            ev[0] = 33; // ClientMessage
+            ev[1] = 32; // format
+            ev[4..8].copy_from_slice(&window.to_ne_bytes());
+            ev[8..12].copy_from_slice(&self.active_atom.to_ne_bytes());
+            ev[12..16].copy_from_slice(&2u32.to_ne_bytes());
+            const SUBSTRUCTURE_NOTIFY: u32 = 1 << 19;
+            const SUBSTRUCTURE_REDIRECT: u32 = 1 << 20;
+            unsafe {
+                xcb_send_event(
+                    self.c, 0, root, SUBSTRUCTURE_NOTIFY | SUBSTRUCTURE_REDIRECT, ev.as_ptr() as *const c_char,
+                );
+                xcb_flush(self.c);
             }
         }
 
@@ -417,6 +476,44 @@ mod xcb {
             Some(String::from_utf8_lossy(&class).replace('\0', " ").to_lowercase())
         }
     }
+}
+
+static WM: OnceLock<Option<(xcb::Conn, u32)>> = OnceLock::new();
+
+/// Our xcb connection and the root window, opened on first use (X11 only).
+fn wm() -> Option<&'static (xcb::Conn, u32)> {
+    WM.get_or_init(|| {
+        let conn = xcb::Conn::open()?;
+        let root = unsafe {
+            let d = x11::XOpenDisplay(std::ptr::null());
+            if d.is_null() {
+                return None;
+            }
+            x11::XDefaultRootWindow(d) as u32
+        };
+        Some((conn, root))
+    })
+    .as_ref()
+}
+
+/// Clicking a WhatsApp message: bring forward the browser window whose tab in
+/// front is WhatsApp Web. Browsers expose only their front tab to the window
+/// manager, so with WhatsApp in a background tab the browser itself comes
+/// forward instead. A new WhatsApp tab is opened only when no browser is open:
+/// a second one would knock the first offline ("WhatsApp is open in another
+/// window").
+pub fn open_whatsapp() {
+    if let Some((conn, root)) = wm() {
+        let browsers: Vec<u32> =
+            conn.client_list(*root).into_iter().filter(|&w| is_browser(&conn.class(w))).collect();
+        let whatsapp = browsers.iter().copied().find(|&w| conn.title(w).to_lowercase().contains("whatsapp"));
+        let firefox = browsers.iter().copied().find(|&w| conn.class(w).contains("firefox"));
+        if let Some(w) = whatsapp.or(firefox).or(browsers.first().copied()) {
+            conn.activate(*root, w);
+            return;
+        }
+    }
+    crate::platform::open_url("https://web.whatsapp.com");
 }
 
 /// Is the focused window a web browser?

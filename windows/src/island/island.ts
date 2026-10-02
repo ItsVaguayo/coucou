@@ -48,7 +48,7 @@ export class Island {
   private miniGrid!: HTMLElement;
   private nowPlaying = createNowPlaying();
   private compactLayout = "";
-  private toasts = createToasts(() => State.notify());
+  private toasts = createToasts(() => State.notify(), () => void Bridge.openWhatsApp());
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
 

@@ -97,6 +97,9 @@ export const Bridge = {
   /** Opens the configured n8n instance in the browser. */
   openN8n: () => call<void>("open_n8n"),
 
+  /** A WhatsApp message was clicked: bring its browser tab forward. */
+  openWhatsApp: () => call<void>("open_whatsapp"),
+
   /** Spotify card buttons. */
   mediaControl: (action: "toggle" | "next" | "previous") => call<void>("media_control", { action }),
 
