@@ -24,6 +24,8 @@ async function main() {
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
 
+  await onEvent<{ from: string; text: string; at: number }>("whatsapp", (m) => island.showMessage(m));
+
   await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onPolledCursor(x, y));
 
   /** Pause has to reach Rust too, or the pollers keep calling out. */

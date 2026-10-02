@@ -63,9 +63,11 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   const label =
     task.id === "integration_spotify"
       ? "Spotify is not open"
-      : error ?? (configured ? "Connected · loading…" : missing);
+      : task.id === "integration_whatsapp"
+        ? "No messages yet · keep WhatsApp Web open in Firefox"
+        : error ?? (configured ? "Connected · loading…" : missing);
   const statusColor =
-    task.id === "integration_spotify" ? "#6B7079" : error || !configured ? "#F4505E" : "#22C55E";
+    task.id === "integration_spotify" || task.id === "integration_whatsapp" ? "#6B7079" : error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
   if (task.id === "integration_claude") {
@@ -96,7 +98,16 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
       }),
     );
   }
-  if (task.id === "integration_spotify") {
+  if (task.id === "integration_whatsapp") {
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}d9`,
+        text: "Open WhatsApp Web",
+        onclick: () => void Bridge.openUrl("https://web.whatsapp.com"),
+      }),
+    );
+  } else if (task.id === "integration_spotify") {
     // Nothing to refresh or configure: it shows up as soon as Spotify opens.
   } else if (configured) {
     actions.append(
@@ -450,6 +461,28 @@ function spotifyCard(): HTMLElement {
   return card;
 }
 
+// ── WhatsApp ──────────────────────────────────────────────────────────────────
+
+function whatsappCard(): HTMLElement {
+  const rows = h("div", { class: "int-rows tight" });
+  arr("integration_whatsapp", "messages").slice(0, 3).forEach((m, i) => {
+    rows.append(
+      h(
+        "button",
+        {
+          class: i === 0 ? "wa-row first" : "wa-row",
+          title: "Open WhatsApp Web",
+          onclick: () => void Bridge.openUrl("https://web.whatsapp.com"),
+        },
+        h("span", { class: "wa-from", text: String(m.from ?? "") }),
+        h("span", { class: "wa-text", text: String(m.text ?? "") }),
+        h("span", { class: "int-ago", text: timeAgo(m.at) }),
+      ),
+    );
+  });
+  return h("div", { class: "int-card" }, header("#25D366", "WhatsApp", "Messages"), rows);
+}
+
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 export interface IntegrationCardHooks {
@@ -478,6 +511,8 @@ export function hasIntegrationData(id: string): boolean {
       return info.loaded;
     case "integration_spotify":
       return get(id).running === true;
+    case "integration_whatsapp":
+      return arr(id, "messages").length > 0;
     default:
       return false;
   }
@@ -508,6 +543,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return calcomCard();
     case "integration_spotify":
       return spotifyCard();
+    case "integration_whatsapp":
+      return whatsappCard();
     default:
       return idleCard(task, hooks.openSettings);
   }

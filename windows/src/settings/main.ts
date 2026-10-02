@@ -284,6 +284,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
   // Read from the desktop session, no key needed.
   { id: "integration_spotify", name: "Spotify", color: "#1DB954", fields: [] },
+  // WhatsApp Web's notifications; they pop up on the island even with this off.
+  { id: "integration_whatsapp", name: "WhatsApp", color: "#25D366", fields: [] },
 ];
 
 const MAX_ACTIVE = 4;

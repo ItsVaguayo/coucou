@@ -2,6 +2,7 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { createNowPlaying, spotifyPlaying, spotifyShown, NOW_PLAYING_W } from "../views/nowplaying";
+import { createToasts, TOAST_W, type ToastMessage } from "../views/toast";
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
@@ -46,7 +47,8 @@ export class Island {
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
   private nowPlaying = createNowPlaying();
-  private playerOn = false;
+  private compactLayout = "";
+  private toasts = createToasts(() => State.notify());
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
 
@@ -212,6 +214,7 @@ export class Island {
       this.botCanvas,
       this.miniGrid,
       this.nowPlaying.el,
+      this.toasts.el,
       this.countdown,
     );
 
@@ -340,6 +343,18 @@ export class Island {
     this.fsm.reveal();
   }
 
+  /** A WhatsApp message: on the compact island for a few seconds. */
+  showMessage(m: ToastMessage) {
+    if (State.paused) return;
+    Sound.play("pop");
+    this.engine.triggerEmote("surprised");
+    const task = State.tasks.find((t) => t.id === "integration_whatsapp");
+    if (task && State.focusId !== task.id) task.pillBadge = "finished";
+    this.toasts.push(m);
+    if (State.mode === "hidden") this.fsm.reveal();
+    State.notify();
+  }
+
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
     this.fsm.pinned = false;
@@ -458,7 +473,11 @@ export class Island {
   private targetSize(): { w: number; h: number; r: number } {
     const size = islandSize(State.mode, State.view, State.chatHistory.length);
     const h = size.h;
-    const w = State.mode === "compact" && spotifyShown() ? NOW_PLAYING_W : size.w;
+    const w =
+      State.mode !== "compact" ? size.w
+        : this.toasts.active ? TOAST_W
+          : spotifyShown() ? NOW_PLAYING_W
+            : size.w;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -881,12 +900,14 @@ export class Island {
 
     // Compact mini grid — or, while a song is loaded, the player in its place.
     const compact = State.mode === "compact";
-    const playerOn = compact && spotifyShown();
-    if (playerOn !== this.playerOn) {
-      this.playerOn = playerOn;
-      if (compact) this.animateGeometry(!playerOn);
+    const toastOn = compact && this.toasts.active;
+    const playerOn = compact && !toastOn && spotifyShown();
+    const layoutKey = `${toastOn}|${playerOn}`;
+    if (layoutKey !== this.compactLayout) {
+      this.compactLayout = layoutKey;
+      if (compact) this.animateGeometry(!toastOn && !playerOn);
     }
-    const showGrid = compact && !playerOn;
+    const showGrid = compact && !playerOn && !toastOn;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
       const others = State.otherTasks.slice(0, 4);
@@ -901,7 +922,8 @@ export class Island {
       }
     }
 
-    this.nowPlaying.sync(compact);
+    this.nowPlaying.sync(compact && !toastOn);
+    this.toasts.sync(compact);
     this.engine.headphones = spotifyPlaying();
 
     syncMiniBotStates(State.tasks);

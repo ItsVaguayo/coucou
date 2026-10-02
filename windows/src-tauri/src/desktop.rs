@@ -2,6 +2,8 @@
 // already brings in (no extra dependency):
 //   * Mochi's eyes — on X11 the pointer can be read anywhere on screen, so the
 //     island gets it the way the Windows build does, not only over itself.
+//   * WhatsApp — WhatsApp Web's notifications, read off the bus as the
+//     browser sends them to the desktop (a monitor connection, read-only).
 //   * Spotify — the MPRIS player it publishes: what is playing, and
 //     play/pause/next/previous. Signal-driven, so nothing runs while the song
 //     does not change; the island moves the progress bar itself.
@@ -9,7 +11,8 @@
 // Each one reports to the island as an ordinary `integration` event, so the
 // pills, cards and badges work exactly like the network integrations.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use gtk::gio;
@@ -67,9 +70,173 @@ pub fn start(app: AppHandle) {
 
     refresh_spotify(app.clone());
 
+    start_notification_watch(app.clone());
+
     if let Some(shared) = app.try_state::<crate::Shared>() {
         spawn_eye_poll(app.clone(), shared.gate.clone());
     }
+}
+
+// ── WhatsApp (desktop notifications) ──────────────────────────────────────────
+
+pub const WHATSAPP_ID: &str = "integration_whatsapp";
+const WHATSAPP_KEEP: usize = 20;
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessage {
+    pub from: String,
+    pub text: String,
+    pub at: u64,
+}
+
+static WHATSAPP: Mutex<VecDeque<ChatMessage>> = Mutex::new(VecDeque::new());
+/// Last (from, text, at) seen: the same notification can cross the bus twice
+/// (a proxy forwarding it to the shell), and must count once.
+static LAST_SEEN: Mutex<Option<(String, String, u64)>> = Mutex::new(None);
+
+/// A second connection to the session bus that only watches: it turns into a
+/// monitor for `Notify` calls and never sends anything else. Any app on the
+/// session may do this; the bus delivers copies, nothing is intercepted.
+fn start_notification_watch(app: AppHandle) {
+    let address = match gio::dbus_address_get_for_bus_sync(gio::BusType::Session, gio::Cancellable::NONE) {
+        Ok(a) => a,
+        Err(err) => return log::line(format!("whatsapp: no bus address ({err})")),
+    };
+    let conn = match gio::DBusConnection::for_address_sync(
+        &address,
+        gio::DBusConnectionFlags::AUTHENTICATION_CLIENT | gio::DBusConnectionFlags::MESSAGE_BUS_CONNECTION,
+        None,
+        gio::Cancellable::NONE,
+    ) {
+        Ok(c) => c,
+        Err(err) => return log::line(format!("whatsapp: could not connect ({err})")),
+    };
+
+    conn.add_filter(move |_, msg, incoming| {
+        if incoming
+            && msg.message_type() == gio::DBusMessageType::MethodCall
+            && msg.member().as_deref() == Some("Notify")
+        {
+            if let Some(body) = msg.body() {
+                on_notify(&app, &body);
+            }
+            // Swallowed: GDBus would otherwise answer the copied call with an
+            // error, and a monitor must never send anything.
+            return None;
+        }
+        // Everything else (our own BecomeMonitor reply first of all) goes on.
+        Some(msg.clone())
+    });
+
+    let rules = vec![
+        "type='method_call',interface='org.freedesktop.Notifications',member='Notify'".to_string(),
+    ];
+    match conn.call_sync(
+        Some("org.freedesktop.DBus"),
+        "/org/freedesktop/DBus",
+        "org.freedesktop.DBus.Monitoring",
+        "BecomeMonitor",
+        Some(&(rules, 0u32).to_variant()),
+        None,
+        gio::DBusCallFlags::NONE,
+        2_000,
+        gio::Cancellable::NONE,
+    ) {
+        Ok(_) => log::line("whatsapp: watching desktop notifications"),
+        Err(err) => log::line(format!("whatsapp: monitor refused ({err})")),
+    }
+    // The connection lives as long as the app.
+    std::mem::forget(conn);
+}
+
+/// `Notify(app_name s, replaces_id u, icon s, summary s, body s, actions as, hints a{sv}, timeout i)`
+fn on_notify(app: &AppHandle, body: &Variant) {
+    if body.n_children() < 7 {
+        return;
+    }
+    let s = |i: usize| body.child_value(i).str().unwrap_or_default().to_string();
+    let (app_name, summary, text) = (s(0), s(3), s(4));
+    let mut desktop_entry = String::new();
+    for_each_entry(&body.child_value(6), |key, value| {
+        if key == "desktop-entry" {
+            desktop_entry = value.str().unwrap_or_default().to_string();
+        }
+    });
+    crate::log::line(format!(
+        "notify app={app_name:?} entry={desktop_entry:?} summary={summary:?} body_len={}",
+        text.len()
+    ));
+    let Some((from, text)) = whatsapp_message(&app_name, &desktop_entry, &summary, &text) else { return };
+
+    let at = now_ms();
+    {
+        let mut last = LAST_SEEN.lock().unwrap();
+        if let Some((f, t, when)) = last.as_ref() {
+            if *f == from && *t == text && at.saturating_sub(*when) < 2_000 {
+                return;
+            }
+        }
+        *last = Some((from.clone(), text.clone(), at));
+    }
+
+    let message = ChatMessage { from, text, at };
+    let messages: Vec<ChatMessage> = {
+        let mut list = WHATSAPP.lock().unwrap();
+        list.push_front(message.clone());
+        list.truncate(WHATSAPP_KEEP);
+        list.iter().cloned().collect()
+    };
+    emit(app, IntegrationUpdate {
+        id: WHATSAPP_ID,
+        data: json!({ "messages": messages }),
+        error: None,
+        event: None,
+    });
+    let _ = app.emit_to(island::WINDOW_LABEL, "whatsapp", message);
+}
+
+/// Picks WhatsApp Web's notifications out of everything the browser sends.
+/// Returns (sender, text).
+fn whatsapp_message(app_name: &str, entry: &str, summary: &str, body: &str) -> Option<(String, String)> {
+    let from_browser = ["firefox", "chrome", "chromium", "brave"]
+        .iter()
+        .any(|b| app_name.to_lowercase().contains(b) || entry.to_lowercase().contains(b));
+    let whatsapp_app = app_name.to_lowercase().contains("whatsapp") || entry.to_lowercase().contains("whatsapp");
+    if !(from_browser || whatsapp_app) {
+        return None;
+    }
+    // Firefox puts the site on the body's first line ("web.whatsapp.com").
+    let mut lines = body.lines();
+    let first = lines.clone().next().unwrap_or_default().trim().to_lowercase();
+    let text = if first.contains("whatsapp.com") {
+        lines.next();
+        lines.collect::<Vec<_>>().join("\n")
+    } else if whatsapp_app {
+        body.to_string()
+    } else {
+        return None;
+    };
+    let from = summary.trim();
+    if from.is_empty() {
+        return None;
+    }
+    Some((from.to_string(), strip_markup(text.trim())))
+}
+
+/// The spec allows a little HTML in bodies; the island shows plain text.
+fn strip_markup(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'")
 }
 
 // ── Eyes (X11) ────────────────────────────────────────────────────────────────

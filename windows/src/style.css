@@ -1572,3 +1572,109 @@ input[type="range"]::-webkit-slider-thumb {
   transition: transform 0.3s;
 }
 
+
+/* ── WhatsApp toast on the compact island ────────────────────────────────── */
+
+#toast {
+  position: absolute;
+  left: 58px;
+  right: 12px;
+  top: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease-in-out;
+}
+
+#toast.in .tw-body {
+  animation: tw-in 0.35s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes tw-in {
+  from { transform: translateY(6px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+
+.tw-icon {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #25d366;
+  color: #fff;
+  box-shadow: 0 0 10px #25d36666;
+}
+
+.tw-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tw-from,
+.tw-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.15;
+}
+
+.tw-from {
+  font: 600 10.5px var(--font);
+  color: #e6e8eb;
+}
+
+.tw-text {
+  font: 400 9.5px var(--font);
+  color: #9398a1;
+}
+
+/* ── WhatsApp card ───────────────────────────────────────────────────────── */
+
+.wa-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 5px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wa-row:hover {
+  background: #25d3661a;
+}
+
+.wa-row.first {
+  background: #25d36614;
+}
+
+.wa-from {
+  font: 600 11px var(--font);
+  color: #c5c8cd;
+  flex: 0 0 auto;
+  max-width: 40%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wa-text {
+  font: 400 10.5px var(--font);
+  color: #8e939c;
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
