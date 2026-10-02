@@ -16,6 +16,8 @@ export class IslandStateMachine {
   greetAutoCollapseDelay = 0.6;
   /** coucou → petit while the mouse hovers the greeting. */
   greetHoverCollapseDelay = 10;
+  /** While true, petit never times out to hidden (re-checked every timeout). */
+  holdPetit: () => boolean = () => false;
   /** An alert waiting for an answer stays open, even when the mouse leaves. */
   pinned = false;
 
@@ -108,7 +110,9 @@ export class IslandStateMachine {
     this.clear("petitHide");
     this.petitHide = window.setTimeout(() => {
       this.petitHide = null;
-      if (this.state === "petit") this.transition("hidden");
+      if (this.state !== "petit") return;
+      if (this.holdPetit()) this.schedulePetitHide();
+      else this.transition("hidden");
     }, this.petitToHiddenDelay * 1000);
   }
 

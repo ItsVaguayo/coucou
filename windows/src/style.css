@@ -1365,3 +1365,232 @@ input[type="range"]::-webkit-slider-thumb {
 .int-card.detail {
   padding-top: 8px;
 }
+
+/* ── Spotify card ─────────────────────────────────────────────────────────── */
+
+.sp-track {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 7px;
+  min-width: 0;
+}
+
+.sp-art {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  background: #1db95424;
+  object-fit: cover;
+}
+
+.sp-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.sp-title {
+  font: 600 11px var(--font);
+  color: #c5c8cd;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-artist {
+  font: 400 10px var(--font);
+  color: var(--dim-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sp-progress {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 7px;
+  padding-right: 4px;
+}
+
+.sp-time {
+  font: 400 9px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.sp-bar {
+  flex: 1 1 auto;
+  height: 3px;
+  border-radius: 2px;
+  background: #ffffff1a;
+  overflow: hidden;
+}
+
+.sp-fill {
+  display: block;
+  height: 100%;
+  background: #1db954;
+  border-radius: 2px;
+}
+
+.sp-controls {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+  padding-top: 4px;
+}
+
+.sp-btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #c5c8cd;
+  cursor: pointer;
+}
+
+.sp-btn:hover {
+  background: #1db95433;
+  color: #fff;
+}
+
+/* ── Now playing on the compact island ───────────────────────────────────── */
+
+#now-playing {
+  position: absolute;
+  left: 58px;
+  right: 10px;
+  top: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease-in-out;
+}
+
+#now-playing.on {
+  pointer-events: auto;
+}
+
+.np-art {
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  object-fit: cover;
+  flex: 0 0 auto;
+  background: #1db95424;
+  box-shadow: 0 0 0 0.5px #ffffff1f;
+}
+
+.np-viewport {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, #000 calc(100% - 12px), transparent);
+}
+
+.np-title,
+.np-artist {
+  display: inline-block;
+  width: max-content;
+  white-space: nowrap;
+  line-height: 1.15;
+}
+
+.np-title {
+  font: 600 10.5px var(--font);
+  color: #e6e8eb;
+}
+
+.np-artist {
+  font: 400 9.5px var(--font);
+  color: #8e939c;
+}
+
+.np-title.scroll {
+  animation: np-scroll var(--np-dur, 8s) ease-in-out infinite alternate;
+}
+
+@keyframes np-scroll {
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--np-shift, 0)); }
+}
+
+#now-playing.paused .np-title {
+  color: #9398a1;
+  animation-play-state: paused;
+}
+
+#now-playing.paused .np-art {
+  filter: grayscale(0.6) brightness(0.7);
+}
+
+.np-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.np-btn {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #9398a1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.np-btn:hover {
+  color: #fff;
+  background: #ffffff14;
+}
+
+.np-btn:active {
+  transform: scale(0.9);
+}
+
+.np-btn.main {
+  color: #fff;
+}
+
+.np-btn.main:hover {
+  background: #1db95440;
+}
+
+.np-bar {
+  position: absolute;
+  left: 0;
+  right: 4px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 1px;
+  background: #ffffff12;
+  overflow: hidden;
+}
+
+.np-fill {
+  display: block;
+  height: 100%;
+  border-radius: 1px;
+  background: #1db954;
+  box-shadow: 0 0 6px #1db954aa;
+}

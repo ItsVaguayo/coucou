@@ -60,8 +60,12 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   // The Claude Code pill is about hooks, not a key — the macOS wording would be
   // misleading here.
   const missing = task.id === "integration_claude" ? "Hooks not installed" : "Key not configured";
-  const label = error ?? (configured ? "Connected · loading…" : missing);
-  const statusColor = error || !configured ? "#F4505E" : "#22C55E";
+  const label =
+    task.id === "integration_spotify"
+      ? "Spotify is not open"
+      : error ?? (configured ? "Connected · loading…" : missing);
+  const statusColor =
+    task.id === "integration_spotify" ? "#6B7079" : error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
   if (task.id === "integration_claude") {
@@ -92,7 +96,9 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
       }),
     );
   }
-  if (configured) {
+  if (task.id === "integration_spotify") {
+    // Nothing to refresh or configure: it shows up as soon as Spotify opens.
+  } else if (configured) {
     actions.append(
       h("button", {
         class: "link-btn",
@@ -372,6 +378,78 @@ function n8nDetail(task: AgentTask, onBack: () => void): HTMLElement {
   );
 }
 
+// ── Spotify ───────────────────────────────────────────────────────────────────
+
+function mmss(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+function spotifyCard(): HTMLElement {
+  const d = get("integration_spotify");
+  const playing = d.playing === true;
+  const length = Number(d.lengthMs ?? 0);
+  const base = Number(d.positionMs ?? 0);
+  const at = Number(d.at ?? Date.now());
+  // Spotify only reports the position on a change; between changes the bar
+  // runs on the clock.
+  const position = () => Math.min(length, playing ? base + (Date.now() - at) : base);
+
+  const art = d.art
+    ? h("img", { class: "sp-art", src: String(d.art), alt: "" })
+    : h("div", { class: "sp-art" });
+  const fill = h("i", { class: "sp-fill" });
+  const elapsed = h("span", { class: "sp-time" });
+  const paint = () => {
+    const p = position();
+    fill.style.width = length > 0 ? `${(p / length) * 100}%` : "0";
+    elapsed.textContent = mmss(p);
+  };
+  paint();
+
+  const btn = (icon: string, action: "toggle" | "next" | "previous", title: string, size = 10) =>
+    h("button", { class: "sp-btn", title, onclick: () => void Bridge.mediaControl(action) }, svg(icon, size));
+
+  const card = h(
+    "div",
+    { class: "int-card" },
+    header("#1DB954", "Spotify", playing ? "Playing" : "Paused"),
+    h(
+      "div",
+      { class: "sp-track" },
+      art,
+      h(
+        "div",
+        { class: "sp-text" },
+        h("span", { class: "sp-title", text: String(d.title || "—") }),
+        h("span", { class: "sp-artist", text: String(d.artist ?? "") }),
+      ),
+    ),
+    h(
+      "div",
+      { class: "sp-progress" },
+      elapsed,
+      h("div", { class: "sp-bar" }, fill),
+      h("span", { class: "sp-time", text: mmss(length) }),
+    ),
+    h(
+      "div",
+      { class: "sp-controls" },
+      btn(ICONS.previous, "previous", "Previous"),
+      btn(playing ? ICONS.pause : ICONS.play, "toggle", playing ? "Pause" : "Play", 12),
+      btn(ICONS.next, "next", "Next"),
+    ),
+  );
+
+  if (playing) {
+    const timer = window.setInterval(() => {
+      if (!card.isConnected) return window.clearInterval(timer);
+      paint();
+    }, 500);
+  }
+  return card;
+}
+
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 
 export interface IntegrationCardHooks {
@@ -398,6 +476,8 @@ export function hasIntegrationData(id: string): boolean {
       return arr(id, "pages").length > 0;
     case "integration_calcom":
       return info.loaded;
+    case "integration_spotify":
+      return get(id).running === true;
     default:
       return false;
   }
@@ -426,6 +506,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return notionCard();
     case "integration_calcom":
       return calcomCard();
+    case "integration_spotify":
+      return spotifyCard();
     default:
       return idleCard(task, hooks.openSettings);
   }

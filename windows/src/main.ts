@@ -24,7 +24,7 @@ async function main() {
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
 
-  await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onCursor(x, y));
+  await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onPolledCursor(x, y));
 
   /** Pause has to reach Rust too, or the pollers keep calling out. */
   const setPaused = (on: boolean) => {

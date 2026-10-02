@@ -20,6 +20,7 @@ export const ICONS = {
   // chevron.right
   chevronRight: "M9 5.5 15.5 12 9 18.5",
   chevronLeft: "M15 5.5 8.5 12 15 18.5",
+  chevronUp: "M5.5 15 12 8.5 18.5 15",
   // checkmark
   check: "M5 12.5 9.5 17 19 7.5",
   // arrow.up (send)
@@ -38,4 +39,9 @@ export const ICONS = {
   stack: "M5 8h14v11.5H5V8zm1.8-3h10.4v1.6H6.8V5zm1.6-2.6h7.2V4H8.4V2.4z",
   // doc.text
   doc: "M6.5 2.6h7l4 4v14.8h-11V2.6zm6.6 1.6v3.3h3.3l-3.3-3.3zM8.6 11h6.8v1.5H8.6V11zm0 3.4h6.8v1.5H8.6v-1.5z",
+  // play.fill / pause.fill / backward.end.fill / forward.end.fill
+  play: "M8 5.2v13.6L19 12 8 5.2z",
+  pause: "M7 5h3.6v14H7V5zm6.4 0H17v14h-3.6V5z",
+  previous: "M6 5h2v14H6V5zm3.5 7L19 5.4v13.2L9.5 12z",
+  next: "M16 5h2v14h-2V5zM5 5.4 14.5 12 5 18.6V5.4z",
 } as const;

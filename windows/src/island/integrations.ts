@@ -51,6 +51,16 @@ function handle(island: Island, update: IntegrationUpdate) {
     configured: previous?.configured ?? true,
   };
 
+  // A song starting wakes the compact island, which then stays up while it plays.
+  if (
+    update.id === "integration_spotify" &&
+    update.data.playing === true &&
+    previous?.data?.playing !== true &&
+    State.settings.activeIntegrations.includes(update.id)
+  ) {
+    island.reveal();
+  }
+
   const event = update.event;
   if (event) {
     const task = State.tasks.find((t) => t.id === update.id);

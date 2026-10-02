@@ -1,6 +1,8 @@
 // Coucou for Windows — app wiring and the commands the island calls.
 
 mod claude;
+#[cfg(target_os = "linux")]
+mod desktop;
 mod files;
 mod hooks;
 mod integrations;
@@ -286,6 +288,15 @@ async fn refresh_integration(app: AppHandle, id: String) {
     integrations::poll_once(app, &id).await;
 }
 
+/// Spotify buttons in its card: "toggle", "next" or "previous".
+#[tauri::command]
+fn media_control(action: String) {
+    #[cfg(target_os = "linux")]
+    desktop::spotify_control(&action);
+    #[cfg(not(target_os = "linux"))]
+    let _ = action;
+}
+
 /// Lets the island write to the same log as the Rust side.
 #[tauri::command]
 fn log_line(message: String) {
@@ -401,6 +412,7 @@ pub fn run() {
             open_n8n,
             open_settings_window,
             set_paused,
+            media_control,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -426,6 +438,8 @@ pub fn run() {
             hooks::ensure_hook_exe(&handle);
             pipe::start(handle.clone());
             integrations::start(handle.clone());
+            #[cfg(target_os = "linux")]
+            desktop::start(handle.clone());
             Ok(())
         })
         .run(tauri::generate_context!())

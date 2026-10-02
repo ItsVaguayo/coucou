@@ -168,6 +168,9 @@ export class BotEngine {
   isMini = false;
   /** Solid body colour for mini bots / integration pills (null = Mochi gradient). */
   bodyColor: RGB | null = null;
+  /** Spotify is playing: Mochi wears headphones (eased in and out). */
+  headphones = false;
+  private headphonesT = 0;
 
   // Animated state (BotEngine `s`)
   yaw = 0; pitch = 0; roll = 0; tilt = 0; open = 1;
@@ -674,12 +677,52 @@ export class BotEngine {
     this.drawEyes(x, body, R, rx, ry);
     if (this.morph > 0.05) this.drawMouth(x, body, R);
 
+    this.headphonesT += ((this.headphones ? 1 : 0) - this.headphonesT) * 0.12;
+    if (this.headphonesT > 0.02 && this.morph < 0.5) this.drawHeadphones(x, R, rx, ry, this.headphonesT);
+
     x.restore();
 
     if (this.badge && this.badgeS > 0.01 && this.morph < 0.25) {
       this.drawBadge(x, this.badge, R, cx, cy);
     }
     this.drawParticles(x, R, cx, cy);
+  }
+
+  /** Band over the top, a cup on each side; slides down from above as it eases in. */
+  private drawHeadphones(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, t: number) {
+    x.save();
+    x.globalAlpha = Math.min(1, t * 1.4);
+    x.translate(0, -(1 - t) * R * 0.6);
+
+    // Band
+    x.lineCap = "round";
+    x.strokeStyle = "#2a2e35";
+    x.lineWidth = R * 0.14;
+    x.beginPath();
+    x.ellipse(0, -ry * 0.05, rx * 1.04, ry * 1.12, 0, Math.PI * 1.08, Math.PI * 1.92);
+    x.stroke();
+    x.strokeStyle = "rgba(255,255,255,0.18)";
+    x.lineWidth = R * 0.035;
+    x.beginPath();
+    x.ellipse(0, -ry * 0.05, rx * 1.04, ry * 1.12, 0, Math.PI * 1.25, Math.PI * 1.6);
+    x.stroke();
+
+    // Cups
+    const cw = R * 0.3;
+    const ch = R * 0.62;
+    for (const sd of [-1, 1]) {
+      const cxp = sd * rx * 1.0;
+      const cyp = -ry * 0.12;
+      x.fillStyle = "#1c1f24";
+      x.beginPath();
+      x.roundRect(cxp - cw / 2, cyp - ch / 2, cw, ch, cw * 0.45);
+      x.fill();
+      x.fillStyle = "#1DB954";
+      x.beginPath();
+      x.roundRect(cxp - cw * 0.22 + sd * cw * 0.12, cyp - ch * 0.32, cw * 0.44, ch * 0.64, cw * 0.22);
+      x.fill();
+    }
+    x.restore();
   }
 
   private bodyPath(rx: number, ry: number, R: number): Path2D {

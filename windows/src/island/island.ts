@@ -1,6 +1,7 @@
 // The island: DOM shell, sizing animation, Mochi placement, mouse handling.
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
+import { createNowPlaying, spotifyPlaying, spotifyShown, NOW_PLAYING_W } from "../views/nowplaying";
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
 import {
@@ -44,6 +45,8 @@ export class Island {
   private botGlow!: HTMLElement;
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
+  private nowPlaying = createNowPlaying();
+  private playerOn = false;
   private countdown!: HTMLElement;
   private wakeStrip!: HTMLElement;
 
@@ -208,6 +211,7 @@ export class Island {
       this.botGlow,
       this.botCanvas,
       this.miniGrid,
+      this.nowPlaying.el,
       this.countdown,
     );
 
@@ -225,6 +229,8 @@ export class Island {
 
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
+    // While a song plays the compact island stays up to show it.
+    this.fsm.holdPetit = () => spotifyPlaying();
     this.fsm.onTransition = (from, to) => {
       switch (to) {
         case "hidden":
@@ -450,7 +456,9 @@ export class Island {
   // ── Geometry ────────────────────────────────────────────────────────────────
 
   private targetSize(): { w: number; h: number; r: number } {
-    const { w, h } = islandSize(State.mode, State.view, State.chatHistory.length);
+    const size = islandSize(State.mode, State.view, State.chatHistory.length);
+    const h = size.h;
+    const w = State.mode === "compact" && spotifyShown() ? NOW_PLAYING_W : size.w;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
   }
@@ -565,8 +573,19 @@ export class Island {
   followPageCursor() {
     window.addEventListener("mousemove", (e) => this.onCursor(e.clientX, e.clientY));
     window.addEventListener("mouseout", (e) => {
+      // On X11 the global poll keeps reporting where the pointer really is.
+      if (performance.now() - this.polledAt < 1000) return;
       if (e.relatedTarget == null) this.onCursor(-10_000, -10_000);
     });
+  }
+
+  /** Last cursor event from Rust's poll (Windows, or X11 on Linux). */
+  private polledAt = -Infinity;
+
+  /** Cursor from Rust's poll. */
+  onPolledCursor(x: number, y: number) {
+    this.polledAt = performance.now();
+    this.onCursor(x, y);
   }
 
   /** Cursor in window-logical coordinates. */
@@ -860,8 +879,14 @@ export class Island {
       }
     }
 
-    // Compact mini grid
-    const showGrid = State.mode === "compact";
+    // Compact mini grid — or, while a song is loaded, the player in its place.
+    const compact = State.mode === "compact";
+    const playerOn = compact && spotifyShown();
+    if (playerOn !== this.playerOn) {
+      this.playerOn = playerOn;
+      if (compact) this.animateGeometry(!playerOn);
+    }
+    const showGrid = compact && !playerOn;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
       const others = State.otherTasks.slice(0, 4);
@@ -875,6 +900,9 @@ export class Island {
         pruneMiniBots();
       }
     }
+
+    this.nowPlaying.sync(compact);
+    this.engine.headphones = spotifyPlaying();
 
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);

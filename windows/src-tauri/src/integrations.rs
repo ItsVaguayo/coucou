@@ -41,7 +41,7 @@ pub struct IntegrationEvent {
     pub detail: Option<String>,
 }
 
-fn emit(app: &AppHandle, update: IntegrationUpdate) {
+pub(crate) fn emit(app: &AppHandle, update: IntegrationUpdate) {
     let _ = app.emit_to(WINDOW_LABEL, "integration", update);
 }
 

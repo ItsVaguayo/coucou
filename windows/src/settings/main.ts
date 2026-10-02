@@ -282,6 +282,8 @@ const INTEGRATIONS: IntegrationDef[] = [
     fields: [{ key: "notion-api-key", label: "Integration token", placeholder: "ntn_…", secret: true }] },
   { id: "integration_calcom", name: "Cal.com", color: "#C9956A",
     fields: [{ key: "calcom-api-key", label: "API key", placeholder: "cal_…", secret: true }] },
+  // Read from the desktop session, no key needed.
+  { id: "integration_spotify", name: "Spotify", color: "#1DB954", fields: [] },
 ];
 
 const MAX_ACTIVE = 4;
