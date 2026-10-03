@@ -67,7 +67,8 @@ fn boot(app: AppHandle, shared: State<Shared>) -> BootInfo {
 fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     let (screen_changed, autostart_changed) = {
         let mut current = shared.settings.lock().unwrap();
-        let screen_changed = current.screen != settings.screen;
+        let screen_changed =
+            current.screen != settings.screen || current.island_offset != settings.island_offset;
         let autostart_changed = current.autostart != settings.autostart;
         *current = settings.clone();
         (screen_changed, autostart_changed)
@@ -84,7 +85,7 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
     }
     if screen_changed {
         let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-        island::apply_geometry(&app, &settings.screen, collapsed);
+        island::apply_geometry(&app, &settings, collapsed);
     }
     // Keep the other window in step (island ⇄ settings window).
     let _ = app.emit("settings-changed", settings);
@@ -94,9 +95,9 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
 /// cursor poll; anything else → full panel and 60 Hz polling.
 #[tauri::command]
 fn set_collapsed(app: AppHandle, shared: State<Shared>, collapsed: bool) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
+    let current = shared.settings.lock().unwrap().clone();
     shared.gate.collapsed.store(collapsed, Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    island::apply_geometry(&app, &current, collapsed);
     // The wake strip must always take the mouse, and a resize invalidates the flag.
     island::refresh_click_through(&app, &shared.gate);
     shared.gate.set_active(!collapsed);
@@ -123,9 +124,25 @@ fn focus_window(app: AppHandle, focused: bool) {
 
 #[tauri::command]
 fn reposition(app: AppHandle, shared: State<Shared>) {
-    let pref = shared.settings.lock().unwrap().screen.clone();
+    let current = shared.settings.lock().unwrap().clone();
     let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
-    island::apply_geometry(&app, &pref, collapsed);
+    island::apply_geometry(&app, &current, collapsed);
+}
+
+/// Live while the island is dragged sideways: moves the window without saving.
+/// Returns the offset actually applied (kept on the display). The page saves
+/// the settings once the drag ends.
+#[tauri::command]
+fn move_island(app: AppHandle, shared: State<Shared>, offset: f64) -> f64 {
+    let current = {
+        let mut s = shared.settings.lock().unwrap();
+        s.island_offset = offset;
+        s.clone()
+    };
+    let collapsed = shared.gate.collapsed.load(Ordering::Relaxed);
+    let used = island::slide(&app, &current, collapsed);
+    shared.settings.lock().unwrap().island_offset = used;
+    used
 }
 
 #[tauri::command]
@@ -441,6 +458,7 @@ pub fn run() {
             save_settings,
             set_collapsed,
             set_island_rect,
+            move_island,
             focus_window,
             reposition,
             open_url,
@@ -477,7 +495,7 @@ pub fn run() {
 
             if let Some(win) = island::window(&handle) {
                 platform::make_non_activating(&win);
-                island::apply_geometry(&handle, &loaded.screen, false);
+                island::apply_geometry(&handle, &loaded, false);
                 let _ = win.show();
             }
             gate.collapsed.store(false, Ordering::Relaxed);

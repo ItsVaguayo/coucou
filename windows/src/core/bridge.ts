@@ -53,6 +53,8 @@ export const Bridge = {
   /** Shrink the window down to the invisible wake strip (hidden) or back to full. */
   setCollapsed: (collapsed: boolean) => call<void>("set_collapsed", { collapsed }),
 
+  /** Shifts the island sideways while it is dragged; returns the offset kept. */
+  moveIsland: (offset: number) => call<number>("move_island", { offset }),
   /**
    * Pushes the island shape in window coordinates. Rust flips click-through from
    * its own cursor poll, so the flag is never a frame behind a click.

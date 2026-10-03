@@ -396,6 +396,26 @@ function generalSection(): HTMLElement {
     void save();
   });
 
+  // Three sizes for the compact island; the open island keeps its own size.
+  const size = h("select", {}) as HTMLSelectElement;
+  size.append(
+    h("option", { value: "0.85", text: "Small" }),
+    h("option", { value: "1", text: "Normal" }),
+    h("option", { value: "1.2", text: "Large" }),
+  );
+  size.value = [0.85, 1.2].includes(settings.islandScale) ? String(settings.islandScale) : "1";
+  size.addEventListener("change", () => {
+    settings.islandScale = Number(size.value);
+    void save();
+  });
+  const recenter = h("button", {
+    text: "Centre",
+    onclick: () => {
+      settings.islandOffset = 0;
+      void save();
+    },
+  });
+
   return h(
     "section",
     {},
@@ -413,6 +433,16 @@ function generalSection(): HTMLElement {
     h("div", { class: "row" },
       h("label", { text: "Island lives on" }),
       screen,
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Island size" }),
+      size,
+      h("span", { class: "hint", text: "when it is small" }),
+    ),
+    h("div", { class: "row" },
+      h("label", { text: "Position" }),
+      recenter,
+      h("span", { class: "hint", text: "drag the island sideways to move it" }),
     ),
     h("div", { class: "row" },
       h("label", { text: "Launch at startup" }),

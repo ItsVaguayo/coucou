@@ -13,15 +13,18 @@ import {
 } from "../core/layout";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
-import { BotEngine, hexToRGB } from "../mochi/engine";
+import { BotEngine, hexToRGB, randomMood } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
-import { createMiniBot, pruneMiniBots, syncMiniBotStates, tickMiniBots } from "../mochi/minibots";
+import {
+  REACTION, createMiniBot, miniBotsReacting, moodRandomMini, pruneMiniBots, setMiniGridScale,
+  syncMiniBotStates, tickMiniBots,
+} from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
 import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
-import { applyProjectColors } from "./hooks";
+import { applySessionPrefs } from "./hooks";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -32,6 +35,36 @@ const UPLOAD_VIEWS: ReadonlySet<IslandViewName> = new Set(["upload", "uploading"
 
 /** Seconds between the drop and the moment the progress bar starts filling. */
 const PRE_PROGRESS = USC.T_PROG_START - USC.T_DROP;
+
+/** How long the cursor has to sit still before Mochi stops watching it. */
+const BORED_AFTER_MS = 5000;
+/** A Mochi makes a face for no reason every 7–17 s. */
+const MOOD_MIN_MS = 7000;
+const MOOD_SPREAD_MS = 10000;
+/** Controls keep their own clicks; the rest of the island can be dragged. */
+const NO_DRAG = "button, input, select, textarea, a, label, [contenteditable], .pill, .color-picker";
+/** Longest name a session can be given, and how many typed names are kept. */
+const SESSION_NAME_MAX = 24;
+const SESSION_NAMES_KEPT = 40;
+/** How far a press has to travel before it is a drag rather than a click. */
+const DRAG_SLOP = 5;
+/** Sizes offered for the compact island, picked in Settings. */
+export const COMPACT_SCALES = [0.85, 1, 1.2] as const;
+
+/** Scale of the compact island; the expanded one is always drawn at 1. */
+/**
+ * Canvas pixels per CSS pixel for a Mochi shown at scale `k`, in steps of 0.25
+ * so an easing scale does not reallocate the canvas every frame.
+ */
+function renderScale(k: number): number {
+  const exact = (window.devicePixelRatio || 1) * Math.max(1, k);
+  return Math.min(3, Math.ceil(exact * 4) / 4);
+}
+
+function compactScale(): number {
+  const z = State.settings.islandScale;
+  return COMPACT_SCALES.find((k) => Math.abs(k - z) < 0.01) ?? 1;
+}
 
 const modeOrder = (m: IslandMode) => (m === "hidden" ? 0 : m === "compact" ? 1 : 2);
 
@@ -60,6 +93,8 @@ export class Island {
   private width = new Tracked(NOTCH_W);
   private height = new Tracked(0);
   private radius = new Tracked(ROUNDED_CORNER);
+  /** Compact-size preset, eased to 1 while expanded. */
+  private zoom = new Tracked(1);
   private botCx = new Spring(46);
   private botCy = new Spring(16);
   private botSize = new Spring(10);
@@ -70,6 +105,7 @@ export class Island {
   private running = false;
   private lastFrame = 0;
   private dirty = true;
+  private canvasDpr = 0;
   private canvasPx = 0;
 
   // Rust starts the window at full size so the launch greeting has room.
@@ -99,6 +135,7 @@ export class Island {
     this.build();
     this.wireFsm();
     this.wireInput();
+    this.scheduleMood();
     this.engine.onDizzy = () => this.handleDizzy();
     this.greeting.onComplete = () => this.fsm.greetComplete();
     State.subscribe(() => {
@@ -113,6 +150,7 @@ export class Island {
     const actions: ViewActions = {
       setView: (v) => this.setView(v),
       collapse: () => this.collapse(),
+      togglePin: () => this.togglePin(),
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
@@ -162,7 +200,7 @@ export class Island {
         void Bridge.approvalDecision(req.requestId, d);
         State.pendingApproval = null;
         State.isPinned = false;
-        this.fsm.pinned = false;
+        this.fsm.pinned = State.userPinned;
         State.updateTask(req.taskId, "working");
         State.setPillBadge(req.taskId, null);
         this.setView(State.defaultView());
@@ -198,8 +236,21 @@ export class Island {
         else delete colors[cwd];
         State.settings.projectColors = colors;
         void Bridge.saveSettings(State.settings);
-        applyProjectColors();
+        applySessionPrefs();
         Sound.play("blip");
+      },
+      setSessionName: (sessionId, name) => {
+        if (!sessionId) return;
+        const names = { ...State.settings.sessionNames };
+        delete names[sessionId];
+        const typed = name?.trim().slice(0, SESSION_NAME_MAX);
+        if (typed) names[sessionId] = typed;
+        // Session ids never come back once a chat is gone: keep the newest few.
+        const keys = Object.keys(names);
+        for (const k of keys.slice(0, Math.max(0, keys.length - SESSION_NAMES_KEPT))) delete names[k];
+        State.settings.sessionNames = names;
+        void Bridge.saveSettings(State.settings);
+        applySessionPrefs();
       },
     };
 
@@ -306,6 +357,7 @@ export class Island {
     if (prev === "expanded") {
       Sound.play("close");
       State.isPinned = false;
+      State.userPinned = false;
       void Bridge.focusWindow(false);
     }
     if (mode !== "expanded") {
@@ -358,6 +410,7 @@ export class Island {
 
   collapse() {
     State.isPinned = false;
+    State.userPinned = false;
     this.fsm.pinned = false;
     // Drive the state machine rather than the mode: setting the mode behind its
     // back left it thinking the island was still open, and a click on the compact
@@ -367,7 +420,7 @@ export class Island {
 
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
   alert(view: IslandViewName) {
-    this.fsm.pinned = State.isPinned;
+    this.fsm.pinned = State.keepOpen;
     this.alerting = true;
     try {
       this.fsm.forceHome();
@@ -471,7 +524,25 @@ export class Island {
 
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
-    this.fsm.pinned = false;
+    this.fsm.pinned = State.userPinned;
+  }
+
+  /** Header pin: keep the open island open until unpinned or minimised. */
+  togglePin() {
+    State.userPinned = !State.userPinned;
+    if (State.userPinned) {
+      this.fsm.pin();
+      this.homeCollapseAt = null;
+    } else {
+      this.fsm.pinned = State.keepOpen;
+      // Unpinned with the cursor away: start the usual countdown.
+      if (!this.wasInIsland && this.fsm.state === "home") {
+        this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
+        this.fsm.mouseLeft();
+      }
+    }
+    Sound.play("blip");
+    State.notify();
   }
 
   // ── File drop ───────────────────────────────────────────────────────────────
@@ -596,16 +667,23 @@ export class Island {
     return { w, h, r };
   }
 
+  private targetZoom(): number {
+    return State.mode === "expanded" ? 1 : compactScale();
+  }
+
   private animateGeometry(shrinking: boolean) {
     const { w, h, r } = this.targetSize();
+    const z = this.targetZoom();
     if (shrinking) {
       this.width.curveTowards(w);
       this.height.curveTowards(h);
       this.radius.curveTowards(r);
+      this.zoom.curveTowards(z);
     } else {
       this.width.springTo(w);
       this.height.springTo(h);
       this.radius.springTo(r);
+      this.zoom.springTo(z);
     }
     this.ensureRunning();
   }
@@ -617,15 +695,19 @@ export class Island {
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
-    this.islandEl.style.transform = `translateX(-50%)`;
+    const k = this.zoom.value;
+    setMiniGridScale(this.targetZoom());
+    // Scaled from the top centre, so the island stays glued to the screen edge.
+    this.islandEl.style.transform = k === 1 ? "translateX(-50%)" : `translateX(-50%) scale(${k})`;
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
-    this.miniGrid.style.left = `${w - 40 - 14.5}px`;
-    this.miniGrid.style.top = `${hh / 2 - 14.5}px`;
+    // Snapped to whole screen pixels like the big Mochi (see drawBot).
+    this.miniGrid.style.left = `${this.snapX(w - 40 - 14.5)}px`;
+    this.miniGrid.style.top = `${this.snapY(hh / 2 - 14.5)}px`;
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
 
-    const rect = { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
+    const rect = this.islandRect();
     const p = this.pushedRect;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
@@ -634,9 +716,29 @@ export class Island {
   }
 
   /** Island rect in window coordinates (origin top-left of the 720×320 window). */
+  /**
+   * A position inside the island moved to the nearest whole screen pixel once
+   * the compact scale (from the top centre) is applied.
+   */
+  private snapX(local: number): number {
+    const k = this.zoom.value;
+    const half = this.width.value / 2;
+    const screen = window.devicePixelRatio || 1;
+    const page = PANEL_W / 2 + (local - half) * k;
+    return (Math.round(page * screen) / screen - PANEL_W / 2) / k + half;
+  }
+
+  private snapY(local: number): number {
+    const k = this.zoom.value;
+    const screen = window.devicePixelRatio || 1;
+    return Math.round(local * k * screen) / screen / k;
+  }
+
+  /** As drawn, so with the compact scale applied. */
   private islandRect(): { x: number; y: number; w: number; h: number } {
-    const w = this.width.value;
-    const hh = this.height.value;
+    const k = this.zoom.value;
+    const w = this.width.value * k;
+    const hh = this.height.value * k;
     return { x: (PANEL_W - w) / 2, y: 0, w, h: hh };
   }
 
@@ -675,18 +777,25 @@ export class Island {
     this.islandEl.addEventListener("mousedown", (e) => {
       Sound.resume();
       State.lastActivity = performance.now();
-      if (State.mode !== "expanded") {
-        this.fsm.click();
-        return;
-      }
-      if (this.isBotHit(e.clientX, e.clientY)) {
-        this.cancelBotHover();
-        this.engine.slap();
-      }
+      const press = () => {
+        if (State.mode !== "expanded") {
+          this.fsm.click();
+          return;
+        }
+        if (this.isBotHit(e.clientX, e.clientY)) {
+          this.cancelBotHover();
+          this.engine.slap();
+        }
+      };
+      // Anything that is not a control can be grabbed to slide the island
+      // sideways; a press that does not move is the usual click.
+      const target = e.target as Element | null;
+      if (e.button === 0 && IS_TAURI && !target?.closest(NO_DRAG)) this.dragSideways(e, press);
+      else press();
     });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) {
+      if (e.key === "Escape" && State.mode === "expanded" && !State.keepOpen) {
         if (State.view === "session") this.setView("overview");
         else this.collapse();
       }
@@ -726,9 +835,11 @@ export class Island {
 
   /** Cursor in window-logical coordinates. */
   onCursor(x: number, y: number) {
+    this.noticeCursor(x, y);
     State.mouse = { x, y };
     const rect = this.islandRect();
-    State.mouseInIsland = { x: x - rect.x, y: y - rect.y };
+    const k = this.zoom.value;
+    State.mouseInIsland = { x: (x - rect.x) / k, y: (y - rect.y) / k };
 
     // Windows sends no cursor position with an OLE drag, so the drop sequence is
     // fed from the Win32 cursor poll instead — it runs throughout the drag.
@@ -747,7 +858,7 @@ export class Island {
     }
     if (!inIsland && this.wasInIsland) {
       this.fsm.mouseLeft();
-      if (this.fsm.state === "home" && !State.isPinned) {
+      if (this.fsm.state === "home" && !State.keepOpen) {
         this.homeCollapseAt = performance.now() + State.settings.autoCloseInterval * 1000;
       }
     }
@@ -772,9 +883,10 @@ export class Island {
 
   private isBotHit(x: number, y: number): boolean {
     const rect = this.islandRect();
-    const cx = rect.x + this.botCx.value;
-    const cy = rect.y + this.botCy.value;
-    const radius = this.botSize.value / 2;
+    const k = this.zoom.value;
+    const cx = rect.x + this.botCx.value * k;
+    const cy = rect.y + this.botCy.value * k;
+    const radius = (this.botSize.value / 2) * k;
     return (x - cx) ** 2 + (y - cy) ** 2 <= radius * radius;
   }
 
@@ -841,6 +953,7 @@ export class Island {
     this.width.step(dt, nowMs);
     this.height.step(dt, nowMs);
     this.radius.step(dt, nowMs);
+    this.zoom.step(dt, nowMs);
     this.applyGeometry();
 
     if (this.dirty) {
@@ -884,12 +997,12 @@ export class Island {
     // sweep — so a hidden island went on burning frames in exactly the states it
     // spends most of its life in. Geometry still has to finish retracting.
     const settling =
-      this.width.animating || this.height.animating || this.radius.animating;
+      this.width.animating || this.height.animating || this.radius.animating || this.zoom.animating;
     const busy = State.mode === "hidden"
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive;
+        greetingActive || this.engine.busy || UploadSeq.isActive || miniBotsReacting();
 
     if (busy) {
       requestAnimationFrame(this.frame);
@@ -929,16 +1042,21 @@ export class Island {
     const size = this.botSize.value;
     const w = Math.max(1, Math.round(size));
     const hCss = w + BOT_OVERHANG;
-    const dpr = Math.min(2, window.devicePixelRatio || 1);
-    if (this.canvasPx !== w) {
+    // Drawn at the size it is shown: the compact scale enlarges the canvas, and
+    // a 1× canvas blown up to 1.2× is what looked blurry.
+    const k = this.zoom.value;
+    const dpr = renderScale(k);
+    if (this.canvasPx !== w || this.canvasDpr !== dpr) {
       this.canvasPx = w;
+      this.canvasDpr = dpr;
       this.botCanvas.width = Math.round(w * dpr);
       this.botCanvas.height = Math.round(hCss * dpr);
       this.botCanvas.style.width = `${w}px`;
       this.botCanvas.style.height = `${hCss}px`;
     }
-    this.botCanvas.style.left = `${this.botCx.value - w / 2}px`;
-    this.botCanvas.style.top = `${this.botCy.value - BOT_OVERHANG / 2 - hCss / 2}px`;
+    // On whole screen pixels, or every pixel of her is resampled across two.
+    this.botCanvas.style.left = `${this.snapX(this.botCx.value - w / 2)}px`;
+    this.botCanvas.style.top = `${this.snapY(this.botCy.value - BOT_OVERHANG / 2 - hCss / 2)}px`;
 
     const ctx = this.botCanvas.getContext("2d");
     if (!ctx) return;
@@ -965,17 +1083,48 @@ export class Island {
 
   /** BotCanvasView.lookX / lookY — tanh of the distance to the bot. */
   private lookX(): number {
+    if (this.bored) return this.boredLook.x;
     const rect = this.islandRect();
-    const botScreenX = rect.x + this.botCx.value;
+    const botScreenX = rect.x + this.botCx.value * this.zoom.value;
     return Math.tanh((State.mouse.x - botScreenX) / 260);
   }
 
   private lookY(): number {
+    if (this.bored) return this.boredLook.y;
     return -Math.tanh((State.mouse.y - this.botCy.value) / 200);
   }
 
+  // ── Losing interest in a still cursor ───────────────────────────────────────
+
+  private bored = false;
+  private boredLook = { x: 0, y: 0 };
+  private boredTimer: number | null = null;
+
+  /**
+   * Mochi follows the cursor while it moves. Once it has sat still for a few
+   * seconds she looks somewhere else; moving it again gets a blink and her
+   * attention back.
+   */
+  private noticeCursor(x: number, y: number) {
+    const last = State.mouse;
+    if (Math.abs(x - last.x) + Math.abs(y - last.y) < 2) return;
+    if (this.bored) {
+      this.bored = false;
+      this.engine.blink();
+    }
+    if (this.boredTimer != null) window.clearTimeout(this.boredTimer);
+    this.boredTimer = window.setTimeout(() => {
+      this.boredTimer = null;
+      if (State.mode === "hidden") return;
+      this.bored = true;
+      const side = Math.random() < 0.5 ? -1 : 1;
+      this.boredLook = { x: side * (0.35 + Math.random() * 0.45), y: -0.35 + Math.random() * 0.4 };
+      this.ensureRunning();
+    }, BORED_AFTER_MS);
+  }
+
   private updateCountdown(nowMs: number) {
-    if (State.mode !== "expanded" || State.isPinned || this.homeCollapseAt == null) {
+    if (State.mode !== "expanded" || State.keepOpen || this.homeCollapseAt == null) {
       this.countdown.style.width = "0px";
       return;
     }
@@ -1047,10 +1196,129 @@ export class Island {
 
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);
+    this.reactBigMochi();
+  }
+
+  private moodTimer: number | null = null;
+
+  /**
+   * Every so often a Mochi — the big one or a mini — makes a face for no reason:
+   * a glare or a nap when left alone, something playful while its chat works. A timer, not the frame loop: between faces nothing is drawn, and a
+   * hidden island skips its turn.
+   */
+  private scheduleMood() {
+    if (this.moodTimer != null) window.clearTimeout(this.moodTimer);
+    this.moodTimer = window.setTimeout(() => {
+      this.moodTimer = null;
+      this.playMood();
+      this.scheduleMood();
+    }, MOOD_MIN_MS + Math.random() * MOOD_SPREAD_MS);
+  }
+
+  private playMood() {
+    if (State.mode === "hidden" || this.uploadActive || State.stateOverride != null) return;
+    if (State.mode === "expanded" && State.view !== "overview" && State.view !== "session") return;
+    // The minis get a turn too, when there are any on screen.
+    if (Math.random() < 0.45 && moodRandomMini()) {
+      this.ensureRunning();
+      return;
+    }
+    if (performance.now() / 1000 < this.engine.reactingUntil) return;
+    const mood = randomMood(State.effectiveState);
+    if (!mood) return;
+    this.engine.mood(mood);
+    this.ensureRunning();
+  }
+
+  /** What the big Mochi last showed, to react the way the minis do. */
+  private seenFocus: { id: string; state: string; leaving: boolean; session: string | null } | null = null;
+
+  /**
+   * The focused session gets the minis' reactions on the big Mochi too: with a
+   * single chat open it is the only Mochi on screen.
+   */
+  private reactBigMochi() {
+    this.engine.idleLife = State.mode === "expanded";
+    const t = State.focusTask;
+    if (!t) return;
+    const prev = this.seenFocus;
+    this.seenFocus = { id: t.id, state: t.state, leaving: !!t.leaving, session: t.sessionId ?? null };
+    if (State.stateOverride != null || !prev || prev.id !== t.id) return;
+    if (t.leaving && !prev.leaving) this.engine.miniReact("bye");
+    else if (t.sessionId && t.sessionId !== prev.session) this.engine.miniReact("hello");
+    else if (t.state !== prev.state) {
+      const r = REACTION[t.state];
+      if (r) this.engine.miniReact(r);
+    }
   }
 
   /** Applies settings coming from Rust at boot. */
+  /**
+   * Follows a press that may become a sideways drag. Measured in screen
+   * coordinates, which do not move with the window, and sent at most once per
+   * frame with only the newest position, so the window never runs behind.
+   */
+  private dragSideways(down: MouseEvent, onClick: () => void) {
+    const startX = down.screenX;
+    const startOffset = State.settings.islandOffset || 0;
+    let target = startOffset;
+    let used = startOffset;
+    let moved = false;
+    let inFlight = false;
+    let queued = false;
+
+    const send = () => {
+      queued = false;
+      if (inFlight || target === used) return;
+      inFlight = true;
+      const sent = target;
+      void Bridge.moveIsland(sent).then((kept) => {
+        inFlight = false;
+        used = kept ?? sent;
+        // Pushed against the screen edge: carry on from there, not from the cursor.
+        if (used !== sent && target === sent) target = used;
+        if (target !== used) schedule();
+      });
+    };
+    const schedule = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(send);
+    };
+    const onMove = (e: MouseEvent) => {
+      const dx = e.screenX - startX;
+      if (!moved && Math.abs(dx) < DRAG_SLOP) return;
+      moved = true;
+      target = Math.round(startOffset + dx);
+      schedule();
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("mouseup", onUp, true);
+      if (!moved) {
+        onClick();
+        return;
+      }
+      // The click that ends a drag is not a click on whatever lies under it.
+      const eat = (c: MouseEvent) => c.stopPropagation();
+      window.addEventListener("click", eat, { capture: true, once: true });
+      window.setTimeout(() => window.removeEventListener("click", eat, true), 0);
+      const finish = () => {
+        if (inFlight || queued) {
+          window.setTimeout(finish, 30);
+          return;
+        }
+        State.settings.islandOffset = used;
+        void Bridge.saveSettings(State.settings);
+      };
+      finish();
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("mouseup", onUp, true);
+  }
+
   applySettings() {
+    if (Math.abs(this.zoom.value - this.targetZoom()) > 0.001) this.animateGeometry(false);
     Sound.setEnabled(State.settings.soundEnabled);
     Sound.setVolume(State.settings.soundVolume);
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;

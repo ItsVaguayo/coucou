@@ -148,20 +148,31 @@ pub fn screen_info(app: &AppHandle, pref: &str) -> ScreenInfo {
     }
 }
 
-/// Places and sizes the window. `collapsed` picks the wake strip instead of the panel.
-pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
-    let Some(win) = window(app) else { return };
-    let Some(m) = target_monitor(app, pref) else { return };
+/// Where the window goes on `m`: top centre shifted by `offset` logical px,
+/// kept so the whole window stays on the display. Returns the physical x and
+/// the offset actually used.
+fn placed_x(m: &Monitor, width_logical: f64, offset: f64) -> (i32, f64) {
+    let scale = m.scale_factor();
+    let mw = m.size().width as f64 / scale;
+    let room = ((mw - PANEL_W) / 2.0).max(0.0);
+    let offset = if offset.is_finite() { offset.clamp(-room, room) } else { 0.0 };
+    let pw = (width_logical * scale).round().max(1.0);
+    let x = m.position().x as f64 + (m.size().width as f64 - pw) / 2.0 + offset * scale;
+    (x.round() as i32, offset)
+}
+
+/// Places and sizes the window. `collapsed` picks the wake strip instead of the
+/// panel. Returns the offset actually used.
+pub fn apply_geometry(app: &AppHandle, settings: &crate::settings::Settings, collapsed: bool) -> f64 {
+    let Some(win) = window(app) else { return settings.island_offset };
+    let Some(m) = target_monitor(app, &settings.screen) else { return settings.island_offset };
 
     let scale = m.scale_factor();
-    let mp = *m.position();
-    let ms = *m.size();
-
     let (lw, lh) = if collapsed { (STRIP_W, STRIP_H) } else { (PANEL_W, PANEL_H) };
     let pw = (lw * scale).round().max(1.0) as u32;
     let ph = (lh * scale).round().max(1.0) as u32;
-    let x = mp.x + (ms.width as i32 - pw as i32) / 2;
-    let y = mp.y;
+    let (x, offset) = placed_x(&m, lw, settings.island_offset);
+    let y = m.position().y;
 
     // GTK never sizes a non-resizable window below its natural size (200 px
     // here), so on Linux the 6 px wake strip would stay a 200 px block. tao
@@ -175,6 +186,18 @@ pub fn apply_geometry(app: &AppHandle, pref: &str, collapsed: bool) {
     // Moving across displays can rescale the window: re-assert the physical size.
     let _ = win.set_size(PhysicalSize::new(pw, ph));
     let _ = win.set_always_on_top(true);
+    offset
+}
+
+/// Only moves the window sideways: what a drag calls on every step, so it
+/// skips the resizes `apply_geometry` does.
+pub fn slide(app: &AppHandle, settings: &crate::settings::Settings, collapsed: bool) -> f64 {
+    let Some(win) = window(app) else { return settings.island_offset };
+    let Some(m) = target_monitor(app, &settings.screen) else { return settings.island_offset };
+    let lw = if collapsed { STRIP_W } else { PANEL_W };
+    let (x, offset) = placed_x(&m, lw, settings.island_offset);
+    let _ = win.set_position(PhysicalPosition::new(x, m.position().y));
+    offset
 }
 
 /// Position, size and scale of the monitor the island lives on. Any change here

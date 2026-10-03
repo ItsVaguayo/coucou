@@ -72,7 +72,8 @@ body {
   background: #000;
   border-radius: 0 0 14px 14px;
   overflow: visible;
-  will-change: width, height, transform;
+  transform-origin: 50% 0;
+  will-change: width, height;
 }
 
 /* A browser has focus: fade so the tabs underneath show through. */
@@ -1993,6 +1994,23 @@ input[type="range"]::-webkit-slider-thumb {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.cp-name {
+  min-width: 0;
+  padding: 2px 4px;
+  margin-left: -4px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed rgba(255, 255, 255, 0.2);
+  border-radius: 5px 5px 0 0;
+  outline: none;
+  cursor: text;
+}
+
+.cp-name:hover,
+.cp-name:focus {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .cp-swatches {

@@ -7,7 +7,7 @@ import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, contextShare, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
-import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
+import { createMiniBot, pruneMiniBots, reactMini } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
@@ -31,6 +31,10 @@ export interface ViewActions {
   focusSession(id: string): void;
   /** Colour for every session in this folder; null goes back to the automatic one. */
   setProjectColor(cwd: string, color: string | null): void;
+  /** Names a Claude Code session by hand; null goes back to the folder's name. */
+  setSessionName(sessionId: string, name: string | null): void;
+  /** Keeps the open island open (header pin), or lets it close again. */
+  togglePin(): void;
 }
 
 export interface ViewHost {
@@ -89,6 +93,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
 
   const gearBtn = h("button", { title: "Settings", onclick: () => go("settings") }, svg(ICONS.gear, 14));
   const soundBtn = h("button", { title: "Mute", onclick: () => actions.toggleSound() }, svg(ICONS.speakerOn, 14));
+  const pinBtn = h("button", { class: "pin-btn", title: "Keep open", onclick: () => actions.togglePin() }, svg(ICONS.pin, 13, { stroke: 1.8 }));
   // Shrink right away instead of waiting for the auto-close countdown.
   const closeBtn = h("button", { title: "Minimise", onclick: () => actions.collapse() }, svg(ICONS.chevronUp, 13, { stroke: 2.4 }));
 
@@ -101,7 +106,7 @@ export function buildHeader(actions: ViewActions): ViewHost {
     "div",
     { id: "header" },
     h("div", { class: "tabs" }, tabHome, tabChat, tabDrop),
-    h("div", { class: "header-actions" }, gearBtn, soundBtn, closeBtn),
+    h("div", { class: "header-actions" }, pinBtn, gearBtn, soundBtn, closeBtn),
   );
 
   return {
@@ -114,6 +119,10 @@ export function buildHeader(actions: ViewActions): ViewHost {
       gearBtn.classList.toggle("on", v === "settings");
       clear(gearBtn);
       gearBtn.append(svg(v === "settings" ? ICONS.gearFill : ICONS.gear, 14));
+      pinBtn.classList.toggle("on", State.userPinned);
+      pinBtn.title = State.userPinned ? "Unpin" : "Keep open";
+      clear(pinBtn);
+      pinBtn.append(State.userPinned ? svg(ICONS.pin, 13) : svg(ICONS.pin, 13, { stroke: 1.8 }));
       clear(soundBtn);
       soundBtn.append(svg(State.settings.soundEnabled ? ICONS.speakerOn : ICONS.speakerOff, 14));
       el.style.opacity = v === "confused" ? "0" : "1";
@@ -336,6 +345,11 @@ function buildPill(
     canvas,
     h("span", { class: "lbl", text: label }),
   );
+  // The mini Mochi notices the cursor, and gets squashed by a click.
+  pill.addEventListener("mouseenter", () => reactMini(canvas, "hover"));
+  pill.addEventListener("mousedown", (e) => {
+    if (e.button === 0) reactMini(canvas, "press");
+  });
   if (share != null) {
     pill.classList.add("has-ctx");
     pill.append(h("span", { class: "pill-ctx", text: `${Math.round(share * 100)}%`, title: "Context nearly full" }));

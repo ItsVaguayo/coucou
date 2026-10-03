@@ -5,7 +5,7 @@ import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
-import { applyProjectColors, handleHook, registerHookHandlers } from "./island/hooks";
+import { applySessionPrefs, handleHook, registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 
 async function main() {
@@ -61,7 +61,7 @@ async function main() {
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();
-    applyProjectColors();
+    applySessionPrefs();
     void refreshConfigured();
   });
 

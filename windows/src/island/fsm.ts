@@ -93,6 +93,12 @@ export class IslandStateMachine {
     this.transition("home");
   }
 
+  /** Pinned open: a close already counting down is called off. */
+  pin() {
+    this.pinned = true;
+    this.clear("homeCollapse");
+  }
+
   /// Explicit close (OK button, Escape, an alert being answered).
   forcePetit() {
     this.cancelTimers();

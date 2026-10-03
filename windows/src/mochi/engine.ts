@@ -34,6 +34,38 @@ interface Tween {
   onComplete?: () => void;
 }
 
+/** One-off reactions of a mini Mochi to its chat, the mouse, or coming and going. */
+export type MiniReaction = "done" | "ask" | "fail" | "hover" | "press" | "hello" | "bye";
+
+/** Gestures a Mochi makes for no reason at all, now and then. */
+export const MOODS = [
+  "glare", "blush", "wink", "love", "surprised", "sleepy", "lookaround", "starry", "sway", "smug",
+] as const;
+export type Mood = (typeof MOODS)[number];
+
+/**
+ * Which faces fit what the Mochi is doing: left alone it glares at you or
+ * nods off; while its chat works it has fun. Other states get none.
+ */
+export function moodsFor(state: BotStateName): readonly Mood[] {
+  switch (state) {
+    case "idle":
+    case "finished":
+      return ["glare", "sleepy"];
+    case "working":
+    case "thinking":
+    case "searching":
+      return ["blush", "wink", "love", "surprised", "lookaround", "starry", "sway", "smug"];
+    default:
+      return [];
+  }
+}
+
+export function randomMood(state: BotStateName): Mood | null {
+  const moods = moodsFor(state);
+  return moods.length ? moods[Math.floor(Math.random() * moods.length)] : null;
+}
+
 type PropKey =
   | "yaw" | "pitch" | "roll" | "tilt" | "open" | "sx" | "sy"
   | "oy" | "ox" | "tint" | "morph" | "hands" | "blush" | "es" | "badgeS";
@@ -166,6 +198,8 @@ const FONT = `system-ui, "Segoe UI Variable Text", "Segoe UI", sans-serif`;
 
 export class BotEngine {
   isMini = false;
+  /** The big Mochi gets the minis' idle routine while the island is open. */
+  idleLife = false;
   /** Solid body colour for mini bots / integration pills (null = Mochi gradient). */
   bodyColor: RGB | null = null;
   /** Spotify is playing: Mochi wears headphones (eased in and out). */
@@ -197,6 +231,8 @@ export class BotEngine {
   permanentEye: EyeShape | null = null;
   permanentEmote: BotEmoteName | null = null;
   miniNextBehavior = 0;
+  /** Until when a reaction is playing: the island keeps drawing for it. */
+  reactingUntil = 0;
 
   badge: Badge | null = null;
   private badgeKey = "none";
@@ -279,6 +315,159 @@ export class BotEngine {
   blink() {
     if (this.locks.has("open")) return;
     this.anim("open", [[0.06, 70, Ease.inOut], [1, 130, Ease.out]]);
+  }
+
+  /** Plays a reaction on a mini Mochi. Silent: the island has its own sounds. */
+  miniReact(kind: MiniReaction) {
+    const n = now();
+    const hop = (height: number) => {
+      this.anim("oy", [[-height, 130, Ease.out], [0.03, 210, Ease.inOut], [0, 170, Ease.back]]);
+      this.anim("sy", [[0.82, 80, Ease.out], [1.18, 130, Ease.out], [0.9, 170, Ease.inOut], [1, 200, Ease.back]]);
+      this.anim("sx", [[1.15, 80, Ease.out], [0.88, 130, Ease.out], [1.05, 170, Ease.inOut], [1, 200, Ease.back]]);
+    };
+    const eyes = (shape: EyeShape, seconds: number) => {
+      this.eyeOverride = shape;
+      this.eyeOverrideUntil = n + seconds;
+    };
+    let length = 1;
+    switch (kind) {
+      case "done":
+        hop(0.36);
+        setTimeout(() => hop(0.22), 520);
+        eyes("happy", 1.6);
+        this.emit("star", 3);
+        this.anim("blush", [[0.7, 200, Ease.out], [0.7, 900, Ease.lin], [0, 400, Ease.inOut]]);
+        length = 1.8;
+        break;
+      case "ask":
+        eyes("wide", 1.2);
+        this.anim("oy", [[-0.3, 140, Ease.out], [0, 380, Ease.back]]);
+        this.anim("es", [[1.3, 120, Ease.out], [1, 500, Ease.inOut]]);
+        break;
+      case "fail":
+        eyes("line", 1.2);
+        this.anim("yaw", [
+          [-0.6, 50, Ease.out], [0.6, 90, Ease.inOut], [-0.45, 80, Ease.inOut],
+          [0.35, 75, Ease.inOut], [-0.15, 70, Ease.inOut], [0, 140, Ease.out],
+        ]);
+        this.emit("sweat", 1);
+        break;
+      case "hover":
+        if (this.locks.has("oy")) return;
+        eyes("happy", 0.9);
+        hop(0.18);
+        this.anim("blush", [[0.6, 160, Ease.out], [0, 700, Ease.inOut]]);
+        length = 0.9;
+        break;
+      case "press":
+        this.squash();
+        this.blink();
+        length = 0.5;
+        break;
+      case "hello":
+        hop(0.42);
+        eyes("happy", 1.4);
+        this.waveStart = n + 0.35;
+        this.waveUntil = n + 1.45;
+        this.emit("spark", 3);
+        length = 1.6;
+        break;
+      case "bye":
+        eyes("closed", 1.4);
+        this.waveStart = n;
+        this.waveUntil = n + 1.1;
+        this.anim("sy", [[1.08, 260, Ease.out], [0.2, 900, Ease.inOut]]);
+        this.anim("sx", [[0.95, 260, Ease.out], [0.2, 900, Ease.inOut]]);
+        length = 1.3;
+        break;
+    }
+    this.reactingUntil = Math.max(this.reactingUntil, n + length);
+    // A reaction is not interrupted by the idle routine.
+    this.miniNextBehavior = Math.max(this.miniNextBehavior, n + length + 0.6);
+  }
+
+  /** A gesture for no reason: gives a resting Mochi a life of its own. */
+  mood(kind: Mood) {
+    const n = now();
+    const eyes = (shape: EyeShape, seconds: number) => {
+      this.eyeOverride = shape;
+      this.eyeOverrideUntil = n + seconds;
+    };
+    const hold = (prop: PropKey, value: number, inMs: number, holdMs: number, outMs = 300) =>
+      this.anim(prop, [[value, inMs, Ease.out], [value, holdMs, Ease.lin], [0, outMs, Ease.inOut]]);
+    let length = 1.6;
+    switch (kind) {
+      case "glare":
+        // Side-eye: squints, turns away a little, then gives you a look.
+        eyes("flat", 1.8);
+        hold("yaw", 0.55, 220, 700, 260);
+        hold("tilt", -0.1, 220, 1000);
+        setTimeout(() => { this.eyeOverride = "line"; }, 1100);
+        length = 2;
+        break;
+      case "blush":
+        eyes("happy", 1.7);
+        hold("blush", 1, 260, 1100, 400);
+        hold("pitch", 0.3, 260, 1000);
+        hold("tilt", 0.1, 260, 1000);
+        length = 1.9;
+        break;
+      case "wink":
+        eyes("wink", 0.7);
+        hold("tilt", 0.14, 120, 450, 220);
+        length = 0.9;
+        break;
+      case "love":
+        eyes("heart", 1.6);
+        this.emit("heart", 3);
+        hold("blush", 0.8, 200, 1000, 400);
+        this.anim("oy", [[-0.12, 160, Ease.out], [0, 320, Ease.back]]);
+        length = 1.8;
+        break;
+      case "surprised":
+        eyes("wide", 0.9);
+        this.anim("oy", [[-0.28, 130, Ease.out], [0, 380, Ease.back]]);
+        this.anim("es", [[1.3, 110, Ease.out], [1, 480, Ease.inOut]]);
+        length = 1;
+        break;
+      case "sleepy":
+        eyes("tired", 2.2);
+        hold("pitch", -0.25, 600, 1100, 500);
+        this.anim("sy", [[0.92, 600, Ease.inOut], [0.92, 1000, Ease.lin], [1, 400, Ease.inOut]]);
+        setTimeout(() => this.emit("z", 1), 700);
+        length = 2.3;
+        break;
+      case "lookaround":
+        this.anim("yaw", [
+          [-0.7, 260, Ease.inOut], [-0.7, 380, Ease.lin], [0.7, 420, Ease.inOut],
+          [0.7, 380, Ease.lin], [0, 300, Ease.inOut],
+        ]);
+        length = 1.8;
+        break;
+      case "starry":
+        eyes("star", 1.4);
+        this.emit("spark", 3);
+        this.anim("es", [[1.15, 160, Ease.out], [1, 600, Ease.inOut]]);
+        length = 1.5;
+        break;
+      case "sway":
+        this.anim("tilt", [
+          [0.16, 300, Ease.inOut], [-0.16, 500, Ease.inOut], [0.12, 450, Ease.inOut],
+          [-0.08, 400, Ease.inOut], [0, 300, Ease.inOut],
+        ]);
+        eyes("happy", 1.8);
+        length = 2;
+        break;
+      case "smug":
+        eyes("flat", 1.4);
+        hold("tilt", -0.14, 200, 900);
+        hold("pitch", -0.18, 200, 900);
+        hold("blush", 0.4, 200, 900);
+        length = 1.5;
+        break;
+    }
+    this.reactingUntil = Math.max(this.reactingUntil, n + length);
+    this.miniNextBehavior = Math.max(this.miniNextBehavior, n + length + 0.6);
   }
 
   squash() {
@@ -461,7 +650,7 @@ export class BotEngine {
       this.tweens.size > 0 ||
       this.particles.length > 0 ||
       this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
-      this.isMini ||
+      this.isMini || this.idleLife || now() < this.reactingUntil ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
       Math.abs(this.tgPitch - this.pitch) > 0.002 ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
@@ -559,7 +748,7 @@ export class BotEngine {
       this.tgSx = 1;
     }
 
-    if (this.isMini && n > this.miniNextBehavior) this.doMiniBehaviorLoop();
+    if ((this.isMini || this.idleLife) && n > this.miniNextBehavior) this.doMiniBehaviorLoop();
 
     const kLook = 1 - Math.pow(0.0025, dt);
     if (!this.locks.has("yaw")) this.yaw += (this.tgYaw - this.yaw) * kLook;
@@ -632,8 +821,19 @@ export class BotEngine {
         this.anim("tilt", [[-0.1, 180, Ease.out], [0.1, 340, Ease.inOut], [0, 220, Ease.inOut]]);
         this.miniNextBehavior = n + 2.6 + Math.random() * 1.5;
         break;
-      default:
-        this.miniNextBehavior = n + 3.0 + Math.random() * 2.0;
+      default: {
+        // Only when resting: a working Mochi has its own animation.
+        const resting = this.state === "idle" || this.state === "finished";
+        const roll = Math.random();
+        // Left alone it only yawns: the rest of its moods are in mood().
+        if (resting && roll < 0.12 && !this.locks.has("sy")) {
+          this.anim("sy", [[1.1, 450, Ease.inOut], [1, 450, Ease.inOut]]);
+          this.anim("sx", [[0.95, 450, Ease.inOut], [1, 450, Ease.inOut]]);
+          this.eyeOverride = "closed";
+          this.eyeOverrideUntil = n + 0.9;
+        }
+        this.miniNextBehavior = n + 3.0 + Math.random() * 3.0;
+      }
     }
   }
 

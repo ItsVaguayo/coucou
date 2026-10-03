@@ -22,6 +22,10 @@ export interface AgentTask {
   sessionCwd?: string | null;
   /** Date.now() of the last thing this pill did or was picked for. */
   lastActiveAt?: number;
+  /** The session has ended; the pill waves goodbye before it goes. */
+  leaving?: boolean;
+  /** Name from the session's folder, used when none was typed (session pills only). */
+  autoName?: string;
   /** True while the colour comes from Settings.projectColors (session pills only). */
   pickedColor?: boolean;
   /** Claude Code session this pill follows (session pills only). */
@@ -162,6 +166,12 @@ export interface Settings {
   model: string;
   /** Colour picked for each Claude Code project, keyed by its working directory. */
   projectColors: Record<string, string>;
+  /** Name given by hand to a Claude Code session, keyed by its session id. */
+  sessionNames: Record<string, string>;
+  /** Horizontal shift of the island from the top centre, in px. */
+  islandOffset: number;
+  /** Island size relative to the default (0.75–1.4). */
+  islandScale: number;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -177,6 +187,9 @@ export const DEFAULT_SETTINGS: Settings = {
   hooksInstalled: false,
   model: "claude-opus-5",
   projectColors: {},
+  sessionNames: {},
+  islandOffset: 0,
+  islandScale: 1,
 };
 
 type Listener = () => void;
@@ -206,6 +219,13 @@ class AppState {
   mouseInIsland = { x: 0, y: 0 };
 
   isPinned = false;
+  /** The user pinned the open island with the header pin: it stays open. */
+  userPinned = false;
+
+  /** Open and staying open: an alert waiting for an answer, or the user's pin. */
+  get keepOpen(): boolean {
+    return this.isPinned || this.userPinned;
+  }
   paused = false;
 
   uploadProgress = 0;

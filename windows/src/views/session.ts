@@ -109,6 +109,42 @@ export function buildColorPicker(
     void Bridge.focusWindow(false);
     pick(custom.value);
   });
+  // The name is typed in place. Typing needs the window to take keyboard focus,
+  // like the colour dialog below.
+  const name = h("input", {
+    class: "cp-title cp-name",
+    value: task.name,
+    maxlength: "24",
+    spellcheck: "false",
+    title: "Rename this session",
+  }) as HTMLInputElement;
+  let named = false;
+  const commit = () => {
+    if (named) return;
+    named = true;
+    void Bridge.focusWindow(false);
+    const typed = name.value.trim();
+    if (task.sessionId && typed !== task.name) {
+      actions.setSessionName(task.sessionId, typed && typed !== task.autoName ? typed : null);
+    }
+  };
+  name.addEventListener("mousedown", () => {
+    named = false;
+    void Bridge.focusWindow(true);
+  });
+  name.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      commit();
+      onDone();
+    } else if (e.key === "Escape") {
+      named = true;
+      void Bridge.focusWindow(false);
+      onDone();
+    }
+  });
+  name.addEventListener("blur", commit);
+
   return h(
     "div",
     { class: "color-picker" },
@@ -116,7 +152,7 @@ export function buildColorPicker(
       "div",
       { class: "cp-head" },
       dot(task.color, 7),
-      h("span", { class: "cp-title", text: task.name }),
+      name,
       h("button", { class: "icon-btn", title: "Close", onclick: onDone }, svg(ICONS.xmark, 8)),
     ),
     h("div", { class: "cp-swatches" }, ...swatches),

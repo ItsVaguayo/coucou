@@ -175,12 +175,28 @@ function claimTask(sessionId: string): string {
   return taskId;
 }
 
+/** Long enough for the mini Mochi to wave goodbye before its pill goes. */
+const GOODBYE_MS = 1400;
+
 function releaseSession(sessionId: string) {
   const s = sessions.get(sessionId);
   if (!s) return;
   sessions.delete(sessionId);
-  if (s.taskId === CLAUDE_ID) clearSession();
-  else State.removeTask(s.taskId);
+  const t = State.tasks.find((x) => x.id === s.taskId);
+  if (!t) return;
+  t.leaving = true;
+  State.notify();
+  window.setTimeout(() => {
+    // The same session came back meanwhile (upsert clears the flag).
+    if (!t.leaving) return;
+    t.leaving = false;
+    if (s.taskId === CLAUDE_ID) {
+      clearSession();
+      State.notify();
+    } else {
+      State.removeTask(s.taskId);
+    }
+  }, GOODBYE_MS);
 }
 
 function pruneStale(now: number) {
@@ -199,6 +215,12 @@ function numberedName(taskId: string, projectName: string, cwd: string): string 
   return others > 0 ? `${projectName} ${others + 1}` : projectName;
 }
 
+/** The name typed for this session, else the folder's ("coucou 2"). */
+function sessionName(t: AgentTask): string {
+  const typed = t.sessionId ? State.settings.sessionNames?.[t.sessionId] : undefined;
+  return typed || t.autoName || t.name;
+}
+
 function newDetail(): SessionDetail {
   return {
     startedAt: Date.now(), lastPrompt: null, running: [], history: [],
@@ -213,13 +235,15 @@ function upsert(taskId: string, sessionId: string, projectName: string, cwd: str
   }
   const t = State.tasks.find((x) => x.id === taskId);
   if (!t) return;
+  t.leaving = false;
   const sid = sessionId || null;
   // Named once, from the folder the session was first heard from: a `cd` inside
   // the chat must not rename it or change its colour.
   if (t.name === CLAUDE_IDLE_NAME || t.sessionId !== sid) {
     if (cwd) t.sessionCwd = cwd;
     t.sessionId = sid;
-    t.name = numberedName(taskId, projectName, t.sessionCwd ?? "");
+    t.autoName = numberedName(taskId, projectName, t.sessionCwd ?? "");
+    t.name = sessionName(t);
     t.color = sessionColor(t.sessionCwd ?? "", projectName, taskId);
     t.pickedColor = !!State.settings.projectColors[t.sessionCwd ?? ""];
   }
@@ -239,10 +263,14 @@ function clearSession() {
   t.state = "idle";
 }
 
-/** Re-applies the colour of every live session (after a pick or a settings change). */
-export function applyProjectColors() {
+/**
+ * Re-applies the colour and name of every live session (after a pick, a rename
+ * or a settings change).
+ */
+export function applySessionPrefs() {
   for (const t of State.tasks) {
     if (t.source !== "claudeCode" || !t.sessionId || !t.sessionCwd) continue;
+    t.name = sessionName(t);
     const picked = State.settings.projectColors[t.sessionCwd];
     if (picked) t.color = picked;
     else if (t.pickedColor) t.color = sessionColor(t.sessionCwd, projectNameOf(t.sessionCwd), t.id);

@@ -24,6 +24,19 @@ pub struct Settings {
     /// Colour chosen for each Claude Code project, keyed by its working directory.
     #[serde(default)]
     pub project_colors: BTreeMap<String, String>,
+    /// Name given by hand to a Claude Code session, keyed by its session id.
+    #[serde(default)]
+    pub session_names: BTreeMap<String, String>,
+    /// Horizontal shift of the island from the top centre, in logical px.
+    #[serde(default)]
+    pub island_offset: f64,
+    /// Size of the compact island: 0.85 small, 1 normal, 1.2 large.
+    #[serde(default = "default_scale")]
+    pub island_scale: f64,
+}
+
+fn default_scale() -> f64 {
+    1.0
 }
 
 fn default_model() -> String {
@@ -48,6 +61,9 @@ impl Default for Settings {
             hooks_installed: false,
             model: default_model(),
             project_colors: BTreeMap::new(),
+            session_names: BTreeMap::new(),
+            island_offset: 0.0,
+            island_scale: 1.0,
         }
     }
 }
