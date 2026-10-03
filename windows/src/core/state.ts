@@ -2,6 +2,7 @@
 
 import type { BotEmoteName, BotStateName, IslandMode, IslandViewName } from "./layout";
 import type { EyeShape } from "../mochi/engine";
+import type { TranscriptTail } from "./bridge";
 
 export type AgentSource = "claudeCode" | "n8n" | "agent";
 export type PillBadge = "approval" | "finished" | "error";
@@ -19,11 +20,75 @@ export interface AgentTask {
   miniEye?: EyeShape | null;
   pillBadge?: PillBadge | null;
   sessionCwd?: string | null;
+  /** Date.now() of the last thing this pill did or was picked for. */
+  lastActiveAt?: number;
+  /** True while the colour comes from Settings.projectColors (session pills only). */
+  pickedColor?: boolean;
+  /** Claude Code session this pill follows (session pills only). */
+  sessionId?: string | null;
+  /** What the session has been doing, for the session detail view. */
+  detail?: SessionDetail | null;
+}
+
+/** One tool call seen between PreToolUse and PostToolUse. */
+export interface ToolRun {
+  /** tool_use_id, to pair PostToolUse with its PreToolUse when calls run in parallel. */
+  id: string;
+  tool: string;
+  target: string;
+  startedAt: number;
+  endedAt: number | null;
+  failed: boolean;
+}
+
+export interface TodoItem {
+  content: string;
+  status: "pending" | "in_progress" | "completed";
+}
+
+export interface SessionDetail {
+  /** Date.now() of the first event seen for this session. */
+  startedAt: number;
+  lastPrompt: string | null;
+  /** Tool calls started and not finished yet (Claude can run several at once). */
+  running: ToolRun[];
+  /** Finished tool calls, newest last. */
+  history: ToolRun[];
+  /** Claude's own task list, from its last TodoWrite. */
+  todos: TodoItem[];
+  /** Files written or edited, most recent last. */
+  files: string[];
+  subagents: number;
+  transcriptPath: string | null;
+  /** The `claude` process, to find its terminal window (Linux). */
+  claudePid: number | null;
+  /** Last read of the transcript's tail: model, context, last reply, title. */
+  tail: TranscriptTail | null;
+  /** Since when the session waits for the user (finished, asking, permission). */
+  waitingSince: number | null;
+  /** The user was nudged about this wait, or has looked at the session since. */
+  nudged: boolean;
+  /** Context already flagged as nearly full (cleared when it drops again). */
+  contextWarned: boolean;
+}
+
+/** Context window of a model, in tokens. */
+export function contextWindow(model: string | null | undefined): number {
+  return model && /haiku/i.test(model) ? 200_000 : 1_000_000;
+}
+
+/** Share of the context window in use, or null when unknown. */
+export function contextShare(d: SessionDetail | null | undefined): number | null {
+  const used = d?.tail?.contextTokens;
+  if (!used) return null;
+  return used / contextWindow(d?.tail?.model);
 }
 
 export interface ApprovalInfo {
   requestId: string;
   sessionId: string;
+  /** Pill the request belongs to. */
+  taskId: string;
   tool: string;
   command: string;
 }
@@ -95,6 +160,8 @@ export interface Settings {
   hooksInstalled: boolean;
   /** Claude model used by the chat. */
   model: string;
+  /** Colour picked for each Claude Code project, keyed by its working directory. */
+  projectColors: Record<string, string>;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -109,9 +176,20 @@ export const DEFAULT_SETTINGS: Settings = {
   autostart: false,
   hooksInstalled: false,
   model: "claude-opus-5",
+  projectColors: {},
 };
 
 type Listener = () => void;
+
+/** States in which a Claude Code session counts as doing something right now. */
+const BUSY_STATES: ReadonlySet<BotStateName> = new Set([
+  "working", "thinking", "searching", "approval", "question",
+]);
+/** With no session busy and nothing touched for this long, the island opens on Spotify. */
+const QUIET_MS = 2 * 60_000;
+
+const isSession = (t: AgentTask) => t.source === "claudeCode" && !!t.sessionId;
+const byRecent = (a: AgentTask, b: AgentTask) => (b.lastActiveAt ?? 0) - (a.lastActiveAt ?? 0);
 
 class AppState {
   mode: IslandMode = "hidden";
@@ -171,11 +249,41 @@ class AppState {
     return this.tasks.filter((t) => t.id !== this.focusId);
   }
 
+  /** Other pills, most recently used first — Claude Code sessions ahead of the rest. */
+  get recentTasks(): AgentTask[] {
+    const others = this.otherTasks;
+    return [...others.filter(isSession).sort(byRecent), ...others.filter((t) => !isSession(t)).sort(byRecent)];
+  }
+
+  touch(id: string) {
+    const t = this.tasks.find((x) => x.id === id);
+    if (t) t.lastActiveAt = Date.now();
+  }
+
+  /**
+   * Which pill the island opens on: a busy session if there is one, else Spotify
+   * when nothing has happened for a while, else whatever was in focus.
+   */
+  autoFocus() {
+    const busy = this.tasks.filter((t) => isSession(t) && BUSY_STATES.has(t.state)).sort(byRecent);
+    if (busy.length) {
+      if (!busy.some((t) => t.id === this.focusId)) this.focusId = busy[0].id;
+      return;
+    }
+    const spotify = this.tasks.find((t) => t.id === "integration_spotify");
+    if (!spotify) return;
+    const since = Date.now() - QUIET_MS;
+    const quiet = !this.tasks.some((t) => t !== spotify && (t.lastActiveAt ?? 0) > since);
+    if (quiet) this.focusId = spotify.id;
+  }
+
   setFocus(id: string) {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     this.focusId = id;
     t.pillBadge = null;
+    t.lastActiveAt = Date.now();
+    if (t.detail) t.detail.nudged = true;
     this.notify();
   }
 
@@ -183,6 +291,7 @@ class AppState {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     t.state = state;
+    t.lastActiveAt = Date.now();
     this.notify();
   }
 
@@ -190,6 +299,7 @@ class AppState {
     const t = this.tasks.find((x) => x.id === id);
     if (!t) return;
     t.steps.push(step);
+    t.lastActiveAt = Date.now();
     if (t.steps.length > 20) t.steps.shift();
     t.stepIndex = t.steps.length - 1;
     this.notify();
@@ -215,8 +325,8 @@ class AppState {
     // then other integrations in declaration order.
     const order = INTEGRATION_AGENTS.map((t) => t.id);
     this.tasks.sort((a, b) => {
-      const isAgentA = a.id.startsWith("agent_");
-      const isAgentB = b.id.startsWith("agent_");
+      const isAgentA = a.id.startsWith("agent_") || a.id.startsWith("claude_");
+      const isAgentB = b.id.startsWith("agent_") || b.id.startsWith("claude_");
       // integration_claude always first
       if (a.id === "integration_claude") return -1;
       if (b.id === "integration_claude") return 1;
@@ -250,6 +360,21 @@ class AppState {
       source: "agent", isIntegration: false,
     });
     if (!this.focusId) this.focusId = id;
+    this.notify();
+  }
+
+  /** Creates a pill for an extra Claude Code session, after integration_claude and
+   *  the other sessions so it lands in the visible slice(0,4). */
+  upsertClaudeSession(id: string, name: string, color: string) {
+    if (this.tasks.some((t) => t.id === id)) return;
+    let at = this.tasks.findIndex((t) => t.id === "integration_claude") + 1;
+    while (this.tasks[at]?.id.startsWith("claude_")) at++;
+    this.tasks.splice(at, 0, {
+      id, name, color,
+      state: "idle", stepIndex: 0, steps: [],
+      // Counted as an integration so the big Mochi takes the session colour.
+      source: "claudeCode", isIntegration: true,
+    });
     this.notify();
   }
 

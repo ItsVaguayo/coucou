@@ -28,8 +28,9 @@ const FIRE_AND_FORGET_BUDGET: Duration = Duration::from_secs(2);
 const DECISION_BUDGET: Duration = Duration::from_secs(110);
 
 /// Fields that are pointless to forward and can be enormous (a whole file read,
-/// a full command output). The island never shows them.
-const DROPPED_FIELDS: &[&str] = &["tool_response", "transcript_path"];
+/// a full command output). The island never shows them. `transcript_path` is
+/// only a path and is kept: the session detail view reads the transcript's tail.
+const DROPPED_FIELDS: &[&str] = &["tool_response"];
 /// Longest string forwarded for any single field; the island truncates to far
 /// less than this anyway.
 const MAX_FIELD_LEN: usize = 2_000;
@@ -161,11 +162,45 @@ fn read_event() -> Option<(String, String)> {
         }
     }
 
+    // The claude process behind this hook, so the island can bring its terminal
+    // window forward. Linux only: /proc is where the parent chain lives.
+    #[cfg(target_os = "linux")]
+    if let Some(pid) = claude_pid() {
+        map.insert("claude_pid".into(), serde_json::Value::from(pid));
+    }
+
     truncate_strings(&mut payload);
 
     let mut line = payload.to_string();
     line.push('\n');
     Some((line, event))
+}
+
+/// Walks up from our parent to the first process that is Claude Code: `claude`
+/// itself, or a runtime whose command line runs it (the VS Code extension).
+#[cfg(target_os = "linux")]
+fn claude_pid() -> Option<u32> {
+    let mut pid = std::os::unix::process::parent_id();
+    for _ in 0..8 {
+        if pid <= 1 {
+            return None;
+        }
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+        let argv0 = cmdline.split(|&b| b == 0).next().unwrap_or_default();
+        let argv0 = String::from_utf8_lossy(argv0);
+        let runs_claude = String::from_utf8_lossy(&cmdline).contains("claude")
+            && !comm.trim().ends_with("sh")
+            && !argv0.contains("coucou-hook");
+        if comm.trim() == "claude" || argv0.rsplit('/').next() == Some("claude") || runs_claude {
+            return Some(pid);
+        }
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // "pid (comm) state ppid …" — comm may contain spaces, so cut after ')'.
+        let after = stat.rsplit_once(')')?.1;
+        pid = after.split_whitespace().nth(1)?.parse().ok()?;
+    }
+    None
 }
 
 /// Caps every string in the payload. A single Write can carry a whole file.

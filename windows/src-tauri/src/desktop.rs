@@ -464,6 +464,13 @@ mod xcb {
             }
         }
 
+        /// The process that owns `window` (_NET_WM_PID), when the client set it.
+        pub fn wm_pid(&self, window: u32) -> Option<u32> {
+            const ATOM_CARDINAL: u32 = 6;
+            let b = self.property(window, self.atom("_NET_WM_PID"), ATOM_CARDINAL, 1)?;
+            Some(u32::from_ne_bytes(b.get(..4)?.try_into().ok()?))
+        }
+
         /// WM_CLASS of the focused window, lowercased ("firefox", "google-chrome"…).
         pub fn active_class(&self, root: u32) -> Option<String> {
             let win = self.property(root, self.active_atom, ATOM_WINDOW, 1)?;
@@ -514,6 +521,74 @@ pub fn open_whatsapp() {
         }
     }
     crate::platform::open_url("https://web.whatsapp.com");
+}
+
+/// `pid` and its parents, nearest first, read from /proc.
+fn ancestors(mut pid: u32) -> Vec<u32> {
+    let mut chain = Vec::new();
+    for _ in 0..16 {
+        if pid <= 1 {
+            break;
+        }
+        chain.push(pid);
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { break };
+        // "pid (comm) state ppid …" — comm may contain spaces, so cut after ')'.
+        let Some((_, after)) = stat.rsplit_once(')') else { break };
+        let Some(ppid) = after.split_whitespace().nth(1).and_then(|p| p.parse().ok()) else { break };
+        pid = ppid;
+    }
+    chain
+}
+
+/// Double-clicking a session's Mochi: bring forward the window its `claude`
+/// runs in. The terminal is found by walking up from `claude` to the process
+/// that owns a window; when that process owns several (one terminal server for
+/// every window), the one whose title carries the session's title wins, since
+/// Claude Code writes that title into the terminal. A chat in a background tab
+/// brings its window forward, not the tab: the window manager never sees tabs.
+pub fn focus_session(claude_pid: Option<u32>, title: Option<&str>, folder: Option<&str>) -> bool {
+    let Some((conn, root)) = wm() else { return false };
+    match session_window(claude_pid, title, folder) {
+        Some(w) => {
+            conn.activate(*root, w);
+            true
+        }
+        None => false,
+    }
+}
+
+/// The window `focus_session` would bring forward, without touching it.
+fn session_window(claude_pid: Option<u32>, title: Option<&str>, folder: Option<&str>) -> Option<u32> {
+    let (conn, root) = wm()?;
+    let windows = conn.client_list(*root);
+    let mut owned: Vec<u32> = Vec::new();
+    for pid in claude_pid.map(ancestors).unwrap_or_default() {
+        owned = windows.iter().copied().filter(|&w| conn.wm_pid(w) == Some(pid)).collect();
+        if !owned.is_empty() {
+            break;
+        }
+    }
+    let titled = |needle: Option<&str>, among: &[u32]| {
+        let needle = needle.filter(|n| n.len() >= 3)?;
+        among.iter().copied().find(|&w| conn.title(w).contains(needle))
+    };
+    titled(title, &owned)
+        .or_else(|| if claude_pid.is_none() { titled(title, &windows) } else { None })
+        .or_else(|| titled(folder, &owned))
+        .or_else(|| owned.first().copied())
+}
+
+#[cfg(test)]
+mod tests {
+    /// Run by hand inside a Claude Code session on X11:
+    /// `COUCOU_PROBE_PID=<claude pid> COUCOU_PROBE_TITLE=<title> cargo test probe_session_window -- --nocapture`
+    #[test]
+    fn probe_session_window() {
+        let Ok(pid) = std::env::var("COUCOU_PROBE_PID") else { return };
+        let title = std::env::var("COUCOU_PROBE_TITLE").ok();
+        let w = super::session_window(pid.parse().ok(), title.as_deref(), None);
+        eprintln!("SESSION_WINDOW={:?}", w.map(|w| format!("{w:#x}")));
+    }
 }
 
 /// Is the focused window a web browser?

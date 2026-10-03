@@ -44,4 +44,7 @@ export const ICONS = {
   pause: "M7 5h3.6v14H7V5zm6.4 0H17v14h-3.6V5z",
   previous: "M6 5h2v14H6V5zm3.5 7L19 5.4v13.2L9.5 12z",
   next: "M16 5h2v14h-2V5zM5 5.4 14.5 12 5 18.6V5.4z",
+  // arrow.up.left.and.arrow.down.right / arrow.down.right.and.arrow.up.left (stroked)
+  expand: "M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5",
+  shrink: "M4 14h6v6M20 10h-6V4M10 14l-6.5 6.5M14 10l6.5-6.5",
 } as const;

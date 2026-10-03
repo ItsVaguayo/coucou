@@ -5,10 +5,18 @@
 
 import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { PROJECT_PALETTE, colorForProject } from "../core/layout";
+import {
+  State, contextShare, type AgentTask, type SessionDetail, type TodoItem, type ToolRun,
+} from "../core/state";
 import type { Island } from "./island";
 
 const CLAUDE_ID = "integration_claude";
+/** What integration_claude looks like with no session on it. */
+const CLAUDE_IDLE_NAME = "VS Code";
+const CLAUDE_IDLE_COLOR = "#F5F6F8";
+/** A session silent this long is presumed gone (terminal closed without SessionEnd). */
+const STALE_MS = 45 * 60_000;
 
 /** Clears the approval card if no decision was made before the hook gave up. */
 let pendingTimeout: number | null = null;
@@ -23,6 +31,10 @@ interface HookPayload {
   prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  tool_use_id?: string;
+  transcript_path?: string;
+  /** The `claude` process behind the hook (Linux relay only). */
+  claude_pid?: number;
   /** Optional agent tag: lowercase, digits and hyphens, ≤ 24 chars. */
   coucou_agent?: string;
 }
@@ -120,11 +132,98 @@ function approvalTarget(tool: string, input: Record<string, unknown>): string {
   return tool;
 }
 
-function upsert(projectName: string, cwd: string) {
-  const t = State.tasks.find((x) => x.id === CLAUDE_ID);
+// ── One pill per Claude Code session ──────────────────────────────────────────
+//
+// The first live session rides integration_claude (a stable pill ID, never
+// renamed); each further one gets its own claude_<id> pill. A session that ends
+// gives its pill back.
+
+const sessions = new Map<string, { taskId: string; lastSeen: number }>();
+
+function projectNameOf(cwd: string): string {
+  return aliasProjectName(lastPathComponent(cwd) || "Session");
+}
+
+/**
+ * The colour a session gets: the one picked for its folder, else the colour of
+ * another live session in the same folder, else the project's hashed colour —
+ * moved to the first free palette entry if a different project already wears it.
+ */
+function sessionColor(cwd: string, projectName: string, taskId = ""): string {
+  const picked = cwd && State.settings.projectColors[cwd];
+  if (picked) return picked;
+  const live = State.tasks.filter((t) => t.id !== taskId && t.sessionId && t.sessionCwd);
+  const sibling = live.find((t) => t.sessionCwd === cwd);
+  if (sibling) return sibling.color;
+  const taken = new Set(live.map((t) => t.color.toLowerCase()));
+  const hashed = colorForProject(projectName);
+  if (!taken.has(hashed.toLowerCase())) return hashed;
+  return PROJECT_PALETTE.find((c) => !taken.has(c.toLowerCase())) ?? hashed;
+}
+
+function claimTask(sessionId: string): string {
+  const known = sessions.get(sessionId);
+  if (known) {
+    known.lastSeen = Date.now();
+    return known.taskId;
+  }
+  const primaryBusy = [...sessions.values()].some((s) => s.taskId === CLAUDE_ID);
+  const taskId = primaryBusy
+    ? `claude_${sessionId.replace(/[^a-zA-Z0-9]/g, "").slice(0, 12)}`
+    : CLAUDE_ID;
+  sessions.set(sessionId, { taskId, lastSeen: Date.now() });
+  return taskId;
+}
+
+function releaseSession(sessionId: string) {
+  const s = sessions.get(sessionId);
+  if (!s) return;
+  sessions.delete(sessionId);
+  if (s.taskId === CLAUDE_ID) clearSession();
+  else State.removeTask(s.taskId);
+}
+
+function pruneStale(now: number) {
+  for (const [sid, s] of sessions) {
+    if (now - s.lastSeen < STALE_MS) continue;
+    if (State.pendingApproval?.taskId === s.taskId) continue;
+    releaseSession(sid);
+  }
+}
+
+/** "coucou", then "coucou 2" for a second live session in the same folder. */
+function numberedName(taskId: string, projectName: string, cwd: string): string {
+  const others = State.tasks.filter(
+    (t) => t.id !== taskId && t.sessionId && t.sessionCwd === cwd,
+  ).length;
+  return others > 0 ? `${projectName} ${others + 1}` : projectName;
+}
+
+function newDetail(): SessionDetail {
+  return {
+    startedAt: Date.now(), lastPrompt: null, running: [], history: [],
+    todos: [], files: [], subagents: 0, transcriptPath: null,
+    claudePid: null, tail: null, waitingSince: null, nudged: false, contextWarned: false,
+  };
+}
+
+function upsert(taskId: string, sessionId: string, projectName: string, cwd: string) {
+  if (taskId !== CLAUDE_ID) {
+    State.upsertClaudeSession(taskId, projectName, sessionColor(cwd, projectName, taskId));
+  }
+  const t = State.tasks.find((x) => x.id === taskId);
   if (!t) return;
-  t.name = projectName;
-  if (cwd) t.sessionCwd = cwd;
+  const sid = sessionId || null;
+  // Named once, from the folder the session was first heard from: a `cd` inside
+  // the chat must not rename it or change its colour.
+  if (t.name === CLAUDE_IDLE_NAME || t.sessionId !== sid) {
+    if (cwd) t.sessionCwd = cwd;
+    t.sessionId = sid;
+    t.name = numberedName(taskId, projectName, t.sessionCwd ?? "");
+    t.color = sessionColor(t.sessionCwd ?? "", projectName, taskId);
+    t.pickedColor = !!State.settings.projectColors[t.sessionCwd ?? ""];
+  }
+  if (!t.detail) t.detail = newDetail();
 }
 
 function clearSession() {
@@ -132,15 +231,201 @@ function clearSession() {
   if (!t) return;
   t.steps = [];
   t.stepIndex = 0;
-  t.name = "VS Code";
+  t.name = CLAUDE_IDLE_NAME;
+  t.color = CLAUDE_IDLE_COLOR;
+  t.sessionId = null;
+  t.detail = null;
   t.pillBadge = null;
+  t.state = "idle";
+}
+
+/** Re-applies the colour of every live session (after a pick or a settings change). */
+export function applyProjectColors() {
+  for (const t of State.tasks) {
+    if (t.source !== "claudeCode" || !t.sessionId || !t.sessionCwd) continue;
+    const picked = State.settings.projectColors[t.sessionCwd];
+    if (picked) t.color = picked;
+    else if (t.pickedColor) t.color = sessionColor(t.sessionCwd, projectNameOf(t.sessionCwd), t.id);
+    t.pickedColor = !!picked;
+  }
+  State.notify();
+}
+
+// ── Session detail bookkeeping ────────────────────────────────────────────────
+
+const FILE_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
+
+function oneLine(s: string, max: number): string {
+  return s.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+/** The argument worth showing for a tool call, with paths made relative to the session. */
+function runTarget(input: Record<string, unknown>, cwd: string): string {
+  for (const field of [...APPROVAL_FIELDS, "notebook_path", "description"]) {
+    const value = input[field];
+    if (typeof value !== "string" || !value.trim()) continue;
+    let v = value.trim();
+    if (cwd && v.startsWith(cwd + "/")) v = v.slice(cwd.length + 1);
+    return oneLine(v, 200);
+  }
+  return "";
+}
+
+function readTodos(raw: unknown): TodoItem[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: TodoItem[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const content = typeof o.content === "string" ? o.content : "";
+    const status = o.status;
+    if (!content) continue;
+    if (status !== "pending" && status !== "in_progress" && status !== "completed") continue;
+    out.push({ content: oneLine(content, 160), status });
+  }
+  return out;
+}
+
+function finishRun(d: SessionDetail, id: string, tool: string, failed: boolean) {
+  let idx = id ? d.running.findIndex((r) => r.id === id) : -1;
+  if (idx < 0) idx = d.running.findIndex((r) => r.tool === tool);
+  if (idx < 0) return;
+  const [run] = d.running.splice(idx, 1);
+  run.endedAt = Date.now();
+  run.failed = failed;
+  d.history.push(run);
+  if (d.history.length > 12) d.history.shift();
+}
+
+function closeAllRuns(d: SessionDetail) {
+  for (const r of [...d.running]) finishRun(d, r.id, r.tool, false);
+}
+
+function trackDetail(taskId: string, name: string, payload: HookPayload, cwd: string) {
+  const d = State.tasks.find((x) => x.id === taskId)?.detail;
+  if (!d) return;
+  if (payload.transcript_path) d.transcriptPath = payload.transcript_path;
+  if (typeof payload.claude_pid === "number") d.claudePid = payload.claude_pid;
+  // Waiting for the user from the moment Claude stops or asks, until it works again.
+  if (name === "Stop" || name === "StopFailure" || name === "PermissionRequest" ||
+    (name === "Notification" && (payload.message ?? "").endsWith("?"))) {
+    if (d.waitingSince == null) d.waitingSince = Date.now();
+    d.nudged = State.mode === "expanded" && State.focusId === taskId;
+  } else if (name === "UserPromptSubmit" || name === "PreToolUse") {
+    d.waitingSince = null;
+  }
+  const tool = payload.tool_name ?? "Tool";
+  const input = payload.tool_input ?? {};
+  switch (name) {
+    case "SessionStart":
+      d.startedAt = Date.now();
+      break;
+    case "UserPromptSubmit": {
+      const asked = payload.prompt ?? payload.message;
+      if (asked) d.lastPrompt = asked.trim().slice(0, 400);
+      break;
+    }
+    case "PreToolUse": {
+      const run: ToolRun = {
+        id: payload.tool_use_id ?? "", tool, target: runTarget(input, cwd),
+        startedAt: Date.now(), endedAt: null, failed: false,
+      };
+      d.running.push(run);
+      if (d.running.length > 8) d.running.shift();
+      if (tool === "TodoWrite") {
+        const todos = readTodos(input.todos);
+        if (todos) d.todos = todos;
+      }
+      const file = input.file_path ?? input.notebook_path;
+      if (FILE_TOOLS.has(tool) && typeof file === "string" && file) {
+        const rel = cwd && file.startsWith(cwd + "/") ? file.slice(cwd.length + 1) : file;
+        d.files = d.files.filter((f) => f !== rel);
+        d.files.push(rel);
+        if (d.files.length > 40) d.files.shift();
+      }
+      break;
+    }
+    case "PostToolUse":
+      finishRun(d, payload.tool_use_id ?? "", tool, false);
+      break;
+    case "PostToolUseFailure":
+      finishRun(d, payload.tool_use_id ?? "", tool, true);
+      break;
+    case "SubagentStart":
+      d.subagents++;
+      break;
+    case "SubagentStop":
+      d.subagents = Math.max(0, d.subagents - 1);
+      break;
+    case "Stop":
+    case "StopFailure":
+      closeAllRuns(d);
+      d.subagents = 0;
+      break;
+  }
+}
+
+// ── Transcript tail, context warning, forgotten chats ─────────────────────────
+
+/** Context share at which the session's pill and detail turn amber. */
+export const CONTEXT_WARN = 0.8;
+/** A session waiting this long for you, unlooked-at, gets a nudge. */
+const NUDGE_AFTER_MS = 10 * 60_000;
+
+const tailReadAt = new Map<string, number>();
+const tailInFlight = new Set<string>();
+
+/**
+ * Re-reads the end of a session's transcript (model, context, last reply,
+ * title), at most once every `minGapMs`. Driven by hook events and by the open
+ * detail view only, so nothing is read while every session sits idle.
+ */
+export async function refreshTail(task: AgentTask, minGapMs = 15_000) {
+  const d = task.detail;
+  if (!d?.transcriptPath || tailInFlight.has(task.id)) return;
+  const now = Date.now();
+  if (now - (tailReadAt.get(task.id) ?? 0) < minGapMs) return;
+  tailReadAt.set(task.id, now);
+  tailInFlight.add(task.id);
+  try {
+    const tail = await Bridge.sessionTranscriptTail(d.transcriptPath);
+    if (!tail) return;
+    d.tail = tail;
+    const share = contextShare(d);
+    if (share != null && share >= CONTEXT_WARN && !d.contextWarned) {
+      d.contextWarned = true;
+      Sound.play("rate");
+    } else if (share != null && share < CONTEXT_WARN * 0.75) {
+      // Compacted or cleared: arm the warning again.
+      d.contextWarned = false;
+    }
+    State.notify();
+  } catch {
+    // A moved or unreadable transcript just leaves those details out.
+  } finally {
+    tailInFlight.delete(task.id);
+  }
+}
+
+/** Once a minute: a session left waiting for you for ten minutes gets one nudge. */
+function nudgeForgotten(island: Island) {
+  const now = Date.now();
+  for (const t of State.tasks) {
+    const d = t.detail;
+    if (!d || d.nudged || d.waitingSince == null || now - d.waitingSince < NUDGE_AFTER_MS) continue;
+    d.nudged = true;
+    if (State.mode === "expanded" && State.focusId === t.id) continue;
+    island.nudge(t.id);
+  }
 }
 
 export function registerHookHandlers(island: Island) {
   void onEvent<HookPayload>("hook", (payload) => handleHook(island, payload));
+  // A minute apart and a few comparisons long: nothing to measure while hidden.
+  window.setInterval(() => nudgeForgotten(island), 60_000);
 }
 
-function handleHook(island: Island, payload: HookPayload) {
+export function handleHook(island: Island, payload: HookPayload) {
   if (State.paused) {
     // Silence here used to cost Claude Code nearly two minutes: the relay waited
     // for a decision from an island that had already decided not to look. Say so,
@@ -151,14 +436,20 @@ function handleHook(island: Island, payload: HookPayload) {
 
   const name = payload.hook_event_name ?? "";
   const cwd = payload.cwd ?? "";
-  const raw = lastPathComponent(cwd);
-  const projectName = aliasProjectName(raw || "Session");
+  const projectName = projectNameOf(cwd);
+  const sessionId = payload.session_id ?? "";
+
+  pruneStale(Date.now());
 
   // Route to the right pill. Valid coucou_agent → dynamic "agent_<name>" pill.
-  // "claude" is reserved; absent or invalid → Claude Code pill unchanged.
+  // "claude" is reserved; absent or invalid → this session's Claude Code pill.
   const validAgent = validateAgent(payload.coucou_agent);
-  const agentId = validAgent ? `agent_${validAgent}` : CLAUDE_ID;
   const isExternalAgent = validAgent !== null;
+  const agentId = isExternalAgent
+    ? `agent_${validAgent}`
+    : name === "SessionEnd"
+      ? sessions.get(sessionId)?.taskId ?? CLAUDE_ID
+      : sessionId ? claimTask(sessionId) : CLAUDE_ID;
 
   const focused = State.focusId === agentId;
 
@@ -173,14 +464,27 @@ function handleHook(island: Island, payload: HookPayload) {
     }
   };
 
-  /** Ensure the agent pill exists (no-op for Claude Code). */
+  /** Ensure the agent pill exists. */
   const ensurePill = () => {
     if (isExternalAgent) {
       State.upsertExternalAgent(agentId, validAgent!, agentColor(validAgent!));
     } else {
-      upsert(projectName, cwd);
+      upsert(agentId, sessionId, projectName, cwd);
     }
   };
+
+  // A session already running when Coucou started is first heard of mid-turn.
+  if (!isExternalAgent && name !== "SessionEnd") ensurePill();
+  if (!isExternalAgent) {
+    trackDetail(agentId, name, payload, cwd);
+    const t = State.tasks.find((x) => x.id === agentId);
+    if (t && (name === "Stop" || name === "StopFailure")) {
+      void refreshTail(t, 0);
+      // The last reply can land in the transcript a moment after the hook fires.
+      window.setTimeout(() => void refreshTail(t, 0), 2000);
+    }
+    else if (t && name === "PostToolUse") void refreshTail(t);
+  }
 
   switch (name) {
     case "SessionStart":
@@ -256,9 +560,11 @@ function handleHook(island: Island, payload: HookPayload) {
     case "SessionEnd":
       if (isExternalAgent) {
         State.removeTask(agentId);
+      } else if (sessionId && sessions.has(sessionId)) {
+        releaseSession(sessionId);
       } else {
         State.updateTask(agentId, "idle");
-        clearSession();
+        if (agentId === CLAUDE_ID) clearSession();
       }
       break;
 
@@ -287,29 +593,32 @@ function handleHook(island: Island, payload: HookPayload) {
         if (requestId) void Bridge.approvalDecline(requestId);
         break;
       }
-      upsert(projectName, cwd);
+      ensurePill();
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
       State.pendingApproval = {
         requestId,
-        sessionId: payload.session_id ?? "",
+        sessionId,
+        taskId: agentId,
         tool,
         command: approvalTarget(tool, input),
       };
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.
       if (requestId) void Bridge.approvalAck(requestId);
-      State.updateTask(CLAUDE_ID, "approval");
+      State.updateTask(agentId, "approval");
       State.isPinned = true;
       Sound.play("approval");
-      if (focused) {
+      // With one pill per session the request usually comes from a pill that is
+      // not in focus. Bring it forward — unless the chat is open, where the card
+      // would yank the text field away; the badge waits there, and clicking the
+      // pill opens the card (Island's setFocus action).
+      if (focused || State.view !== "prompt" || State.mode !== "expanded") {
+        if (!focused) State.setFocus(agentId);
         island.alert("approval");
       } else {
-        // Another agent holds the view, so the card would yank it away. The badge
-        // is the signal instead — but it has to be on screen for that to mean
-        // anything, hence the reveal. We just told the relay a human can act.
-        State.setPillBadge(CLAUDE_ID, "approval");
+        State.setPillBadge(agentId, "approval");
         island.reveal();
       }
       // Coucou answers within 108 s or not at all; after that the terminal has
@@ -320,8 +629,8 @@ function handleHook(island: Island, payload: HookPayload) {
         State.pendingApproval = null;
         State.isPinned = false;
         island.dropPin();
-        State.updateTask(CLAUDE_ID, "working");
-        State.setPillBadge(CLAUDE_ID, null);
+        State.updateTask(agentId, "working");
+        State.setPillBadge(agentId, null);
         if (State.view === "approval") island.setView(State.defaultView());
         State.notify();
       }, 110_000);

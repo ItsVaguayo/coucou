@@ -12,7 +12,9 @@ mod pipe;
 mod platform;
 mod secrets;
 mod settings;
+mod transcript;
 mod tray;
+mod usage;
 
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -307,6 +309,46 @@ fn open_whatsapp() {
 }
 
 /// Lets the island write to the same log as the Rust side.
+/// Model, context size and last reply of a Claude Code session (detail view).
+#[tauri::command]
+async fn session_transcript_tail(path: String) -> Result<transcript::TranscriptTail, String> {
+    tauri::async_runtime::spawn_blocking(move || transcript::tail(&path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Double-click on a session's Mochi: bring its terminal window forward.
+#[tauri::command]
+async fn focus_session(
+    claude_pid: Option<u32>,
+    transcript_path: Option<String>,
+    cwd: Option<String>,
+) -> bool {
+    tauri::async_runtime::spawn_blocking(move || {
+        let title = transcript_path.and_then(|p| transcript::tail(&p).ok()).and_then(|t| t.title);
+        #[cfg(target_os = "linux")]
+        {
+            let folder = cwd.as_deref().map(|c| c.rsplit('/').next().unwrap_or(c).to_string());
+            desktop::focus_session(claude_pid, title.as_deref(), folder.as_deref())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (claude_pid, title, cwd);
+            false
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Tokens and estimated cost of every Claude Code session since `since_ms`.
+#[tauri::command]
+async fn usage_today(since_ms: i64) -> usage::UsageToday {
+    tauri::async_runtime::spawn_blocking(move || usage::today(since_ms))
+        .await
+        .unwrap_or_default()
+}
+
 #[tauri::command]
 fn log_line(message: String) {
     log::line(format!("ui  {message}"));
@@ -411,6 +453,9 @@ pub fn run() {
             approval_ack,
             approval_decline,
             log_line,
+            session_transcript_tail,
+            focus_session,
+            usage_today,
             chat_send,
             chat_reset,
             ingest_file,

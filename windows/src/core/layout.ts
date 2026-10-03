@@ -21,6 +21,7 @@ export type IslandViewName =
   | "result"
   | "note"
   | "settings"
+  | "session"
   | "greeting";
 
 export type BotStateName =
@@ -85,6 +86,8 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
   result: { height: 160, botX: 52, botY: null, botDiameter: 44, agentMode: "column" },
   note: { height: 160, botX: 60, botY: null, botDiameter: 50, agentMode: "column" },
   settings: { height: 160, botX: 54, botY: null, botDiameter: 46, agentMode: "none" },
+  // Session detail: the tallest view, Mochi in the top-left corner of the card.
+  session: { height: 300, botX: 54, botY: 78, botDiameter: 44, agentMode: "none" },
   greeting: { height: 150, botX: 320, botY: 90, botDiameter: 0, agentMode: "none" },
 };
 
@@ -204,7 +207,11 @@ const PROJECT_COLORS: Record<string, string> = {
   notchbuddy: "#EC4899",
 };
 
-const FALLBACK_COLORS = ["#22C55E", "#EAB308", "#60A5FA", "#E879F9"];
+/** Colours offered by the session pill's picker, and handed out by hash. */
+export const PROJECT_PALETTE = [
+  "#22C55E", "#EAB308", "#60A5FA", "#E879F9",
+  "#F97316", "#2DD4BF", "#F4505E", "#A78BFA",
+];
 
 export function colorForProject(name: string): string {
   const key = name.toLowerCase().trim();
@@ -215,7 +222,7 @@ export function colorForProject(name: string): string {
   }
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
-  return FALLBACK_COLORS[Math.abs(hash) % FALLBACK_COLORS.length];
+  return PROJECT_PALETTE[Math.abs(hash) % PROJECT_PALETTE.length];
 }
 
 // Card wash colours (CardBackground.washColor)

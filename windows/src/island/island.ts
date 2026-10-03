@@ -21,6 +21,7 @@ import { USC, UploadSeq } from "../upload/sequence";
 import { buildHeader, buildViews, type ViewActions, type ViewHost } from "../views/views";
 import { h } from "../views/dom";
 import { IslandStateMachine } from "./fsm";
+import { applyProjectColors } from "./hooks";
 
 const BOT_OVERHANG = 40;
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
@@ -115,10 +116,19 @@ export class Island {
       setFocus: (id) => {
         State.setFocus(id);
         Sound.play("blip");
+        // A session waiting on a permission: its pill is the way to the card.
+        if (State.pendingApproval?.taskId === id) this.setView("approval");
       },
       openTerminal: () => {
-        const cwd = State.focusTask?.sessionCwd ?? null;
-        void Bridge.openInVSCode(cwd);
+        const task = State.focusTask;
+        const cwd = task?.sessionCwd ?? null;
+        if (!task?.detail) {
+          void Bridge.openInVSCode(cwd);
+          return;
+        }
+        void this.focusSession(task.id).then((ok) => {
+          if (!ok) void Bridge.openInVSCode(cwd);
+        });
       },
       // The ↗ button — same targets as openAgentTarget() on macOS.
       openTarget: () => {
@@ -132,7 +142,12 @@ export class Island {
           integration_notion: "https://notion.so",
           integration_calcom: "https://app.cal.com/bookings",
         };
-        if (task.id === "integration_claude") void Bridge.openInVSCode(task.sessionCwd ?? null);
+        if (task.source === "claudeCode") {
+          // The chat's own terminal first; VS Code on the folder when none is found.
+          void this.focusSession(task.id).then((ok) => {
+            if (!ok) void Bridge.openInVSCode(task.sessionCwd ?? null);
+          });
+        }
         else if (task.id === "integration_n8n") void Bridge.openN8n();
         else if (urls[task.id]) void Bridge.openUrl(urls[task.id]);
       },
@@ -148,8 +163,8 @@ export class Island {
         State.pendingApproval = null;
         State.isPinned = false;
         this.fsm.pinned = false;
-        State.updateTask("integration_claude", "working");
-        State.setPillBadge("integration_claude", null);
+        State.updateTask(req.taskId, "working");
+        State.setPillBadge(req.taskId, null);
         this.setView(State.defaultView());
       },
       toggleSound: () => {
@@ -172,6 +187,20 @@ export class Island {
       },
       openSettingsWindow: () => void Bridge.openSettingsWindow(),
       blip: () => Sound.play("blip"),
+      focusSession: (id) => {
+        Sound.play("blip");
+        void this.focusSession(id);
+      },
+      setProjectColor: (cwd, color) => {
+        if (!cwd) return;
+        const colors = { ...State.settings.projectColors };
+        if (color) colors[cwd] = color;
+        else delete colors[cwd];
+        State.settings.projectColors = colors;
+        void Bridge.saveSettings(State.settings);
+        applyProjectColors();
+        Sound.play("blip");
+      },
     };
 
     this.wakeStrip = h("div", { id: "wake-strip" });
@@ -247,6 +276,9 @@ export class Island {
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
         case "home":
+          // Opened by the user: start on whatever deserves it. An alert opens on
+          // its own subject instead (see alert()).
+          if (!this.alerting) State.autoFocus();
           this.expand(State.defaultView());
           if (!this.wasInIsland) this.fsm.mouseLeft();
           break;
@@ -335,9 +367,17 @@ export class Island {
   /** Alert from the hook server: open on this view. Pinned alerts never auto-close. */
   alert(view: IslandViewName) {
     this.fsm.pinned = State.isPinned;
-    this.fsm.forceHome();
+    this.alerting = true;
+    try {
+      this.fsm.forceHome();
+    } finally {
+      this.alerting = false;
+    }
     this.expand(view);
   }
+
+  /** True while an alert drives the state machine: no auto-focus then. */
+  private alerting = false;
 
   reveal() {
     this.fsm.reveal();
@@ -365,9 +405,33 @@ export class Island {
     this.engine.triggerEmote("surprised");
     const task = State.tasks.find((t) => t.id === "integration_whatsapp");
     if (task && State.focusId !== task.id) task.pillBadge = "finished";
+    if (task) State.touch(task.id);
     this.toasts.push(m);
     if (State.mode === "hidden") this.fsm.reveal();
     State.notify();
+  }
+
+  /** A session has waited ten minutes for you: show it, once, without opening. */
+  nudge(taskId: string) {
+    if (State.paused) return;
+    const task = State.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    Sound.play("pop");
+    if (State.focusId === taskId) this.engine.triggerEmote("surprised");
+    else task.pillBadge = "approval";
+    if (State.mode === "hidden") this.fsm.reveal();
+    State.notify();
+  }
+
+  /** Brings the session's terminal forward; false when no window was found. */
+  async focusSession(taskId: string): Promise<boolean> {
+    const task = State.tasks.find((t) => t.id === taskId);
+    const d = task?.detail;
+    if (!task || !d) return false;
+    d.nudged = true;
+    const ok = await Bridge.focusSession(d.claudePid, d.transcriptPath, task.sessionCwd ?? null);
+    void Bridge.log(`focus session ${taskId} pid=${d.claudePid ?? "?"} → ${ok}`);
+    return !!ok;
   }
 
   /** An alert stopped waiting for an answer: let the island auto-close again. */
@@ -587,7 +651,10 @@ export class Island {
     });
 
     window.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) this.collapse();
+      if (e.key === "Escape" && State.mode === "expanded" && !State.isPinned) {
+        if (State.view === "session") this.setView("overview");
+        else this.collapse();
+      }
       State.lastActivity = performance.now();
     });
 
@@ -926,7 +993,7 @@ export class Island {
     const showGrid = compact && !playerOn && !toastOn;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
-      const others = State.otherTasks.slice(0, 4);
+      const others = State.recentTasks.slice(0, 4);
       const key = others.map((t) => t.id).join("|");
       if (this.miniGrid.dataset.key !== key) {
         this.miniGrid.dataset.key = key;

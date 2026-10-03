@@ -30,6 +30,21 @@ export interface BootInfo {
   cursorPoll: boolean;
 }
 
+export interface TranscriptTail {
+  model: string | null;
+  contextTokens: number | null;
+  lastText: string | null;
+  /** Claude Code's title for the session, also shown as the terminal's title. */
+  title: string | null;
+}
+
+export interface UsageToday {
+  inputTokens: number;
+  outputTokens: number;
+  /** API-equivalent dollars: an estimate, nothing is billed per token on a plan. */
+  usd: number;
+}
+
 export const Bridge = {
   boot: () => call<BootInfo>("boot"),
 
@@ -58,6 +73,17 @@ export const Bridge = {
   quit: () => call<void>("quit_app"),
 
   openSettingsWindow: () => call<void>("open_settings_window"),
+
+  /** Model, context size and last reply, read from the end of a session transcript. */
+  sessionTranscriptTail: (path: string) =>
+    call<TranscriptTail>("session_transcript_tail", { path }),
+
+  /** Brings forward the terminal window a Claude Code session runs in. */
+  focusSession: (claudePid: number | null, transcriptPath: string | null, cwd: string | null) =>
+    call<boolean>("focus_session", { claudePid, transcriptPath, cwd }),
+
+  /** Every session's tokens since local midnight. */
+  usageToday: (sinceMs: number) => call<UsageToday>("usage_today", { sinceMs }),
 
   /** Writes to %LOCALAPPDATA%\Coucou\coucou.log, next to the Rust lines. */
   log: (message: string) => call<void>("log_line", { message }),

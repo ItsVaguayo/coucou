@@ -1725,3 +1725,361 @@ input[type="range"]::-webkit-slider-thumb {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── Session detail (view "session") ───────────────────────────────────── */
+
+.ss-body {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 14px 12px;
+  gap: 10px;
+}
+
+.ss-head {
+  padding: 0 34px 0 92px;
+  min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.ss-who {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.ss-color {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 9px;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.08);
+}
+
+.ss-color:hover {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+.ss-name {
+  font: 600 12px var(--font);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-state {
+  font: 500 11px var(--font);
+  color: var(--dim);
+}
+
+.ss-meta {
+  font: 400 11px var(--font);
+  color: var(--dim-3);
+}
+
+.ss-chip {
+  font: 500 10px var(--font);
+  color: var(--dim-2);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+.ss-prompt {
+  font: 400 12px var(--font);
+  color: #c9ccd2;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ss-grid {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  padding-top: 9px;
+}
+
+.ss-col {
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ss-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ss-label {
+  font: 600 9.5px var(--font);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--dim-4);
+  margin-bottom: 1px;
+}
+
+.ss-run,
+.ss-todo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 17px;
+  min-width: 0;
+  font: 400 11.5px var(--font);
+  color: var(--dim);
+}
+
+.ss-run.live {
+  color: var(--ink);
+}
+
+.ss-ico {
+  width: 12px;
+  flex: 0 0 12px;
+  display: grid;
+  place-items: center;
+  color: #454850;
+}
+
+.ss-ico.live {
+  color: #3b9eff;
+}
+
+.ss-ico.fail {
+  color: var(--red);
+}
+
+.ss-tool {
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.ss-target {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 400 11px var(--mono);
+  color: var(--dim-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-run.live .ss-target {
+  color: #c9ccd2;
+}
+
+.ss-time {
+  flex: 0 0 auto;
+  font: 400 10.5px var(--font);
+  color: var(--dim-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.ss-box {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+  border-radius: 3px;
+  border: 1.4px solid #4b4f57;
+  display: grid;
+  place-items: center;
+  color: #0b0c0e;
+}
+
+.ss-todo.completed .ss-box {
+  background: var(--green-2);
+  border-color: var(--green-2);
+}
+
+.ss-todo.completed .ss-todo-text {
+  color: var(--dim-4);
+  text-decoration: line-through;
+}
+
+.ss-todo.in_progress .ss-box {
+  border-color: #3b9eff;
+  box-shadow: inset 0 0 0 2px #141518, inset 0 0 0 6px #3b9eff;
+}
+
+.ss-todo.in_progress .ss-todo-text {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.ss-todo-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-files {
+  font: 400 11px var(--mono);
+  color: var(--dim-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ss-said {
+  font: 400 11.5px var(--font);
+  color: #c9ccd2;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+}
+
+.ss-quiet {
+  font: 400 11.5px var(--font);
+  color: var(--dim-3);
+}
+
+.ss-empty {
+  margin: auto;
+  font: 400 13px var(--font);
+  color: var(--dim);
+}
+
+/* ── Session colour picker (overview pills and session header) ─────────── */
+
+.pills.picking {
+  display: block;
+  padding: 0 12px;
+  align-content: unset;
+}
+
+.pills.picking .color-picker {
+  height: 100%;
+  justify-content: center;
+}
+
+.color-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.cp-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.cp-title {
+  font: 600 11px var(--font);
+  color: var(--ink);
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cp-swatches {
+  display: flex;
+  gap: 7px;
+}
+
+.cp-swatch {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  padding: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+
+.cp-swatch:hover {
+  transform: scale(1.15);
+}
+
+.cp-swatch.on {
+  box-shadow: 0 0 0 2px #141518, 0 0 0 3.5px rgba(255, 255, 255, 0.85);
+}
+
+.cp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cp-custom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 400 11px var(--font);
+  color: var(--dim-2);
+  cursor: pointer;
+}
+
+.cp-custom input[type="color"] {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  padding: 0;
+  background: none;
+  cursor: pointer;
+}
+
+.ss-head .color-picker {
+  padding-top: 2px;
+}
+
+.cp-foot .link-btn {
+  color: var(--dim-2);
+}
+
+/* ── "All" tab of the pill grid ─────────────────────────────────────────── */
+
+.pills.listing {
+  align-content: start;
+  overflow-y: auto;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  scrollbar-width: none;
+}
+
+.pills.listing::-webkit-scrollbar {
+  display: none;
+}
+
+.list-pill .lbl {
+  color: var(--dim-2);
+}
+
+/* Finished card: Claude's last reply, two lines at most. */
+.title.said {
+  font: 500 13px var(--font);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+}
+
+.ss-chip.warn {
+  color: #1a1206;
+  background: var(--amber);
+}

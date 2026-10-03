@@ -5,12 +5,13 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
-import { State, type AgentTask } from "../core/state";
+import { State, contextShare, type AgentTask } from "../core/state";
 import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
 import { createMiniBot, pruneMiniBots } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
 import { renderIntegrationCard, type IntegrationCardHooks } from "./integrations";
+import { buildColorPicker, buildSession } from "./session";
 
 export interface ViewActions {
   setView(v: IslandViewName): void;
@@ -26,6 +27,10 @@ export interface ViewActions {
   setAutoClose(seconds: number): void;
   openSettingsWindow(): void;
   blip(): void;
+  /** Bring forward the terminal window a Claude Code session runs in. */
+  focusSession(id: string): void;
+  /** Colour for every session in this folder; null goes back to the automatic one. */
+  setProjectColor(cwd: string, color: string | null): void;
 }
 
 export interface ViewHost {
@@ -128,7 +133,19 @@ function buildOverview(actions: ViewActions): ViewHost {
     { class: "icon-btn jump", title: "Open", onclick: () => actions.openTarget() },
     svg(ICONS.arrowUpRight, 8),
   );
-  const left = card(null, leftBody, jump);
+  // ⤢ — the focused session in detail (Claude Code sessions only).
+  const openDetail = () => {
+    actions.blip();
+    actions.setView("session");
+  };
+  const expand = h(
+    "button",
+    { class: "icon-btn jump", title: "Details", style: "right:32px", onclick: openDetail },
+    svg(ICONS.expand, 9, { stroke: 2.4 }),
+  );
+  tickerBody.addEventListener("click", openDetail);
+  tickerBody.style.cursor = "pointer";
+  const left = card(null, leftBody, expand, jump);
   const pills = h("div", { class: "pills" });
   const right = card(null, pills);
 
@@ -137,7 +154,28 @@ function buildOverview(actions: ViewActions): ViewHost {
     h("div", { class: "right" }, right),
   );
 
+  // Double-click on a session pill = go to its terminal. The first click already
+  // moves that session to the big Mochi and reshuffles the pills, so the second
+  // click lands elsewhere: it is caught anywhere on the overview, by timing.
+  let lastPill: { id: string; at: number } | null = null;
+  el.addEventListener("click", (e) => {
+    if (lastPill && performance.now() - lastPill.at < 450) {
+      e.stopPropagation();
+      e.preventDefault();
+      const id = lastPill.id;
+      lastPill = null;
+      actions.focusSession(id);
+    }
+  }, true);
+  const pillClicked = (task: AgentTask) => {
+    lastPill = task.detail ? { id: task.id, at: performance.now() } : null;
+  };
+
   let pillIds = "";
+  /** Session whose colour picker replaces the pills, if any. */
+  let pickerFor: string | null = null;
+  /** The "All" tab: every pill, scrollable, instead of the four most recent. */
+  let showAll = false;
   let detailOpen = false;
   let lastFocus: string | null = null;
   let mode: "ticker" | "card" | null = null;
@@ -177,7 +215,8 @@ function buildOverview(actions: ViewActions): ViewHost {
       // VS Code with a live Claude Code session keeps the ticker; every other
       // pill shows its own card, exactly like IntegrationCardView.
       const sessionActive =
-        task?.id === "integration_claude" && (task.state !== "idle" || task.steps.length > 0);
+        task?.source === "claudeCode" &&
+        (!!task.sessionId || task.state !== "idle" || task.steps.length > 0);
 
       if (task && sessionActive) {
         if (mode !== "ticker") {
@@ -187,6 +226,8 @@ function buildOverview(actions: ViewActions): ViewHost {
           cardKey = "";
         }
         clear(who);
+        // Room for the ⤢ button beside ↗.
+        who.style.paddingRight = task.detail ? "58px" : "";
         who.append(
           dot(task.color, 7),
           h("span", { class: "name", text: task.name }),
@@ -215,29 +256,93 @@ function buildOverview(actions: ViewActions): ViewHost {
       }
 
       jump.style.display = detailOpen ? "none" : "";
+      expand.style.display = mode === "ticker" && task?.detail ? "" : "none";
 
-      const others = State.otherTasks.slice(0, 4);
-      const pillKey = others.map((t) => `${t.id}:${t.pillBadge ?? ""}`).join("|");
+      // Most recently used first. With more than four, the fourth slot opens
+      // the full list instead.
+      const recent = State.recentTasks;
+      if (recent.length <= 4) showAll = false;
+      const others = showAll ? recent : recent.length > 4 ? recent.slice(0, 3) : recent;
+      const picking = pickerFor ? State.tasks.find((t) => t.id === pickerFor) ?? null : null;
+      if (pickerFor && !picking) pickerFor = null;
+      const pillKey = picking
+        ? `picker:${picking.id}:${picking.color}`
+        : `${showAll}~${recent.length}~` +
+          others.map((t) => `${t.id}:${t.pillBadge ?? ""}:${t.color}:${t.name}:${t.detail?.contextWarned ?? ""}`).join("|");
       if (pillKey !== pillIds) {
         pillIds = pillKey;
         clear(pills);
-        for (const t of others) pills.append(buildPill(t, actions));
+        const openPicker = (id: string) => {
+          pickerFor = id;
+          State.notify();
+        };
+        if (picking) {
+          pills.append(buildColorPicker(picking, actions, () => {
+            pickerFor = null;
+            State.notify();
+          }));
+        } else if (showAll) {
+          pills.append(buildListPill("‹ Back", () => {
+            showAll = false;
+            State.notify();
+          }));
+          for (const t of others) {
+            pills.append(buildPill(t, actions, openPicker, () => {
+              showAll = false;
+              pillClicked(t);
+            }));
+          }
+        } else {
+          for (const t of others) pills.append(buildPill(t, actions, openPicker, () => pillClicked(t)));
+          if (recent.length > 4) {
+            pills.append(buildListPill(`All · ${recent.length}`, () => {
+              showAll = true;
+              State.notify();
+            }));
+          }
+        }
+        pills.classList.toggle("picking", !!picking);
+        pills.classList.toggle("listing", showAll && !picking);
         pruneMiniBots();
       }
     },
   };
 }
 
-function buildPill(task: AgentTask, actions: ViewActions): HTMLElement {
-  const label = task.id === "integration_claude" ? "VS Code" : task.name;
+/** A pill with no Mochi: the "All" tab and its way back. */
+function buildListPill(label: string, onClick: () => void): HTMLElement {
+  return h("div", { class: "pill list-pill", onclick: onClick }, h("span", { class: "lbl", text: label }));
+}
+
+function buildPill(
+  task: AgentTask,
+  actions: ViewActions,
+  openPicker: (id: string) => void,
+  onPicked?: () => void,
+): HTMLElement {
+  let label = task.id === "integration_claude" && !task.sessionId ? "VS Code" : task.name;
+  // Context nearly full: say how full, it is the cue to /compact or start over.
+  const share = task.detail?.contextWarned ? contextShare(task.detail) : null;
+  if (share != null) label = `${label} · ${Math.round(share * 100)}%`;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
-    { class: "pill", onclick: () => actions.setFocus(task.id) },
+    {
+      class: "pill",
+      onclick: () => {
+        onPicked?.();
+        actions.setFocus(task.id);
+      },
+    },
     canvas,
     h("span", { class: "lbl", text: label }),
   );
   pill.style.borderColor = `${task.color}24`;
+  // Right-click a Claude Code session: pick the colour of its project.
+  pill.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (task.source === "claudeCode" && task.sessionId && task.sessionCwd) openPicker(task.id);
+  });
   pill.addEventListener("mouseenter", () => {
     pill.style.background = `${task.color}2e`;
     pill.style.borderColor = `${task.color}8c`;
@@ -377,7 +482,10 @@ function buildFinished(actions: ViewActions): ViewHost {
     sync() {
       clear(who);
       who.append(agentWho(State.focusTask, "Claude Code finished"));
-      title.textContent = State.focusTask?.steps.at(-1) ?? "Session finished";
+      // What Claude actually said at the end beats the name of its last tool.
+      const said = State.focusTask?.detail?.tail?.lastText;
+      title.textContent = said ?? State.focusTask?.steps.at(-1) ?? "Session finished";
+      title.classList.toggle("said", !!said);
     },
   };
 }
@@ -499,6 +607,7 @@ export function buildViews(
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
+  map.set("session", buildSession(actions));
   map.set("prompt", buildPrompt(onChatHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());

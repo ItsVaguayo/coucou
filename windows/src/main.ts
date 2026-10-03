@@ -5,7 +5,7 @@ import { Bridge, IS_TAURI, onEvent } from "./core/bridge";
 import { Sound } from "./core/sound";
 import { State, type Settings } from "./core/state";
 import { Island } from "./island/island";
-import { registerHookHandlers } from "./island/hooks";
+import { applyProjectColors, handleHook, registerHookHandlers } from "./island/hooks";
 import { registerIntegrationHandlers, refreshConfigured } from "./island/integrations";
 
 async function main() {
@@ -61,6 +61,7 @@ async function main() {
     State.settings = { ...State.settings, ...s };
     island.applySettings();
     State.loadIntegrationTasks();
+    applyProjectColors();
     void refreshConfigured();
   });
 
@@ -73,6 +74,10 @@ async function main() {
   // page wake the island so the visuals can be checked with `npm run dev`.
   if (!IS_TAURI) {
     document.addEventListener("click", () => Sound.resume(), { once: true });
+    // Lets a browser console replay hook events: __coucou.hook({hook_event_name: …}).
+    Object.assign(window, {
+      __coucou: { island, State, hook: (p: Parameters<typeof handleHook>[1]) => handleHook(island, p) },
+    });
   }
 }
 

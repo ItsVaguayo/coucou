@@ -58,6 +58,7 @@ function handle(island: Island, update: IntegrationUpdate) {
     previous?.data?.playing !== true &&
     State.settings.activeIntegrations.includes(update.id)
   ) {
+    State.touch(update.id);
     island.reveal();
   }
 
@@ -66,6 +67,7 @@ function handle(island: Island, update: IntegrationUpdate) {
     const task = State.tasks.find((t) => t.id === update.id);
     if (task) {
       task.state = event.success ? "finished" : "error";
+      task.lastActiveAt = Date.now();
       task.steps = event.detail ? [event.label, event.detail] : [event.label];
       task.stepIndex = task.steps.length - 1;
       if (State.focusId !== update.id) {

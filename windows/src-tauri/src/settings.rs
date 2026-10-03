@@ -2,6 +2,7 @@
 // No secret ever lands here — API keys live in the OS keychain (see secrets.rs).
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,6 +21,9 @@ pub struct Settings {
     /// Defaulted explicitly so a settings.json written by an older build still loads.
     #[serde(default = "default_model")]
     pub model: String,
+    /// Colour chosen for each Claude Code project, keyed by its working directory.
+    #[serde(default)]
+    pub project_colors: BTreeMap<String, String>,
 }
 
 fn default_model() -> String {
@@ -43,6 +47,7 @@ impl Default for Settings {
             autostart: false,
             hooks_installed: false,
             model: default_model(),
+            project_colors: BTreeMap::new(),
         }
     }
 }
