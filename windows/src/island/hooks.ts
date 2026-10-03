@@ -480,8 +480,15 @@ export function handleHook(island: Island, payload: HookPayload) {
     const t = State.tasks.find((x) => x.id === agentId);
     if (t && (name === "Stop" || name === "StopFailure")) {
       void refreshTail(t, 0);
-      // The last reply can land in the transcript a moment after the hook fires.
-      window.setTimeout(() => void refreshTail(t, 0), 2000);
+      // The last reply can land in the transcript a moment after the hook fires;
+      // a session out of focus announces itself once it is read.
+      const outOfFocus = State.focusId !== t.id;
+      const failed = name === "StopFailure";
+      window.setTimeout(() => {
+        void refreshTail(t, 0).then(() => {
+          if (outOfFocus) island.sessionDone(t.id, failed);
+        });
+      }, 1800);
     }
     else if (t && name === "PostToolUse") void refreshTail(t);
   }
@@ -537,7 +544,9 @@ export function handleHook(island: Island, payload: HookPayload) {
     case "Stop":
       State.updateTask(agentId, "finished");
       if (payload.message) State.appendStep(agentId, payload.message.slice(0, 60));
-      Sound.play("finish");
+      // Out of focus, a Claude Code session plays its sound with its notice, in
+      // turn with the others (Island.sessionDone).
+      if (focused || isExternalAgent) Sound.play("finish");
       if (focused) surface("finished", true);
       else State.setPillBadge(agentId, "finished");
       window.setTimeout(() => {
@@ -552,7 +561,7 @@ export function handleHook(island: Island, payload: HookPayload) {
 
     case "StopFailure":
       State.updateTask(agentId, "error");
-      Sound.play("error");
+      if (focused || isExternalAgent) Sound.play("error");
       if (focused) surface("error", true);
       else State.setPillBadge(agentId, "error");
       break;

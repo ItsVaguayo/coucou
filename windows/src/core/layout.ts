@@ -95,6 +95,19 @@ export const VIEW_LAYOUTS: Record<IslandViewName, ViewLayout> = {
 // dropped the whole sequence — Mochi included — is drawn by src/upload, which
 // owns its own constants (USC) straight from UploadSequenceEngine.swift.
 
+/** Session detail height, set by the view from its content (see views/session). */
+export const SESSION_MIN_H = 210;
+export const SESSION_MAX_H = 300;
+let sessionHeight = SESSION_MAX_H;
+
+/** Returns true when the height actually changed. */
+export function setSessionHeight(h: number): boolean {
+  const next = Math.round(Math.min(SESSION_MAX_H, Math.max(SESSION_MIN_H, h)));
+  if (Math.abs(next - sessionHeight) < 4) return false;
+  sessionHeight = next;
+  return true;
+}
+
 /** Chat view grows with the conversation — IslandContainer.chatPromptHeight. */
 export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
@@ -113,7 +126,10 @@ export function islandSize(
     case "compact":
       return { w: COMPACT_W, h: NOTCH_H };
     case "expanded": {
-      const h = view === "prompt" ? chatPromptHeight(chatCount) : VIEW_LAYOUTS[view].height;
+      const h =
+        view === "prompt" ? chatPromptHeight(chatCount)
+          : view === "session" ? sessionHeight
+            : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }
   }

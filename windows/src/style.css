@@ -2083,3 +2083,60 @@ input[type="range"]::-webkit-slider-thumb {
   color: #1a1206;
   background: var(--amber);
 }
+
+.tw-glyph {
+  display: grid;
+  place-items: center;
+}
+
+/* ── Card corner buttons (⤢ ↗): bigger, and lit while the card is hovered ─ */
+
+.card .icon-btn.jump {
+  width: 18px;
+  height: 18px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.card:hover .icon-btn.jump {
+  background: rgba(255, 255, 255, 0.13);
+  color: var(--ink);
+}
+
+.card .icon-btn.jump:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ── Context share on a pill, beside the name instead of inside it ──────── */
+
+.pill .pill-ctx {
+  position: absolute;
+  right: 7px;
+  font: 700 8.5px var(--font);
+  color: var(--amber);
+  pointer-events: none;
+}
+
+.pill.has-ctx .lbl {
+  padding-right: 30px;
+}
+
+/* ── Session notice: the chat's own mini Mochi, with a ✓ or ✕ badge ─────── */
+
+.tw-icon.has-node {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tw-icon.has-node > .tw-glyph > svg {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  z-index: 1;
+  width: 11px;
+  height: 11px;
+  padding: 2px;
+  border-radius: 50%;
+  color: #0b0c0e;
+  background: var(--badge, #22c55e);
+  box-shadow: 0 0 0 1.5px #000;
+}

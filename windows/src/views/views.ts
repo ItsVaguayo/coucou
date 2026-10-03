@@ -140,7 +140,7 @@ function buildOverview(actions: ViewActions): ViewHost {
   };
   const expand = h(
     "button",
-    { class: "icon-btn jump", title: "Details", style: "right:32px", onclick: openDetail },
+    { class: "icon-btn jump", title: "Details", style: "right:34px", onclick: openDetail },
     svg(ICONS.expand, 9, { stroke: 2.4 }),
   );
   tickerBody.addEventListener("click", openDetail);
@@ -320,10 +320,9 @@ function buildPill(
   openPicker: (id: string) => void,
   onPicked?: () => void,
 ): HTMLElement {
-  let label = task.id === "integration_claude" && !task.sessionId ? "VS Code" : task.name;
+  const label = task.id === "integration_claude" && !task.sessionId ? "VS Code" : task.name;
   // Context nearly full: say how full, it is the cue to /compact or start over.
   const share = task.detail?.contextWarned ? contextShare(task.detail) : null;
-  if (share != null) label = `${label} · ${Math.round(share * 100)}%`;
   const canvas = createMiniBot(task, 24);
   const pill = h(
     "div",
@@ -337,6 +336,13 @@ function buildPill(
     canvas,
     h("span", { class: "lbl", text: label }),
   );
+  if (share != null) {
+    pill.classList.add("has-ctx");
+    pill.append(h("span", { class: "pill-ctx", text: `${Math.round(share * 100)}%`, title: "Context nearly full" }));
+  }
+  // A faint wash of the pill's colour at rest, so it reads before the hover.
+  const rest = `${task.color}12`;
+  pill.style.background = rest;
   pill.style.borderColor = `${task.color}24`;
   // Right-click a Claude Code session: pick the colour of its project.
   pill.addEventListener("contextmenu", (e) => {
@@ -350,7 +356,7 @@ function buildPill(
     (pill.querySelector(".lbl") as HTMLElement).style.color = lighten(task.color, 0.3);
   });
   pill.addEventListener("mouseleave", () => {
-    pill.style.background = "";
+    pill.style.background = rest;
     pill.style.borderColor = `${task.color}24`;
     pill.style.boxShadow = "";
     (pill.querySelector(".lbl") as HTMLElement).style.color = "";
@@ -607,7 +613,7 @@ export function buildViews(
   map.set("confused", buildConfused());
   map.set("note", buildNote());
   map.set("settings", buildSettings(actions));
-  map.set("session", buildSession(actions));
+  map.set("session", buildSession(actions, onChatHeightChange));
   map.set("prompt", buildPrompt(onChatHeightChange));
   map.set("upload", buildUpload());
   map.set("uploading", buildUploading());

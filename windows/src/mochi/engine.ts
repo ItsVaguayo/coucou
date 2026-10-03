@@ -754,19 +754,19 @@ export class BotEngine {
   }
 
   private drawBody(x: CanvasRenderingContext2D, body: Path2D, R: number, rx: number, ry: number) {
-    if (this.bodyColor) {
-      // Mini bots: flat solid fill — no gradient, no reflection, no highlight
-      x.fillStyle = rgba(this.bodyColor, 1);
-      x.fill(body);
-      return;
-    }
+    // A coloured Mochi (a session, an integration) keeps the volume of the white
+    // one: the same gradient and edge shade, tinted with its colour.
+    const c = this.bodyColor;
+    const top = c ? mix3(c, [1, 1, 1], 0.24) : BASE_TOP;
+    const bottom = c ? mix3(c, [0, 0, 0], 0.2) : BASE_BOTTOM;
     const g = x.createLinearGradient(rx * 0.7, -ry * 0.85, -rx * 0.8, ry * 0.9);
-    g.addColorStop(0, rgba(BASE_TOP));
-    g.addColorStop(1, rgba(BASE_BOTTOM));
+    g.addColorStop(0, rgba(top));
+    g.addColorStop(1, rgba(bottom));
     x.fillStyle = g;
     x.fill(body);
 
-    const effectiveTint = this.tint * (1 - this.morph);
+    // The state tint would fight the session colour, so only the white one gets it.
+    const effectiveTint = c ? 0 : this.tint * (1 - this.morph);
     if (effectiveTint > 0.01) {
       const tg = x.createLinearGradient(0, ry, 0, -ry);
       tg.addColorStop(0, rgba(this.col, 0.72 * effectiveTint));
@@ -782,6 +782,9 @@ export class BotEngine {
     x.fillStyle = sh;
     x.fill(body);
 
+    // The white reflection only on the white Mochi: on a coloured one it read as
+    // a pale disc stuck on the body.
+    if (c) return;
     const hl = x.createRadialGradient(rx * 0.34, -ry * 0.46, 0, rx * 0.34, -ry * 0.46, R * 0.42);
     hl.addColorStop(0, "rgba(255,255,255,0.55)");
     hl.addColorStop(1, "rgba(255,255,255,0)");

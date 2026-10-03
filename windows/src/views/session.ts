@@ -6,7 +6,7 @@
 import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Bridge, type UsageToday } from "../core/bridge";
-import { PROJECT_PALETTE } from "../core/layout";
+import { PROJECT_PALETTE, setSessionHeight } from "../core/layout";
 import { State, contextShare, type AgentTask, type ToolRun } from "../core/state";
 import { CONTEXT_WARN, refreshTail } from "../island/hooks";
 import type { ViewActions, ViewHost } from "./views";
@@ -39,11 +39,16 @@ function duration(ms: number): string {
 }
 
 function tokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
   return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
 }
 
+/** "claude-opus-5-5" → "Opus 5.5", "claude-haiku-4-5-20251001" → "Haiku 4.5". */
 function shortModel(model: string): string {
-  return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
+  const [family, ...version] = model.replace(/^claude-/, "").replace(/-\d{8}$/, "").split("-");
+  if (!family) return model;
+  const name = family[0].toUpperCase() + family.slice(1);
+  return version.length ? `${name} ${version.join(".")}` : name;
 }
 
 function lastSegment(path: string): string {
@@ -126,7 +131,18 @@ export function buildColorPicker(
 
 // ── The view ──────────────────────────────────────────────────────────────────
 
-export function buildSession(actions: ViewActions): ViewHost {
+/** Island height around the card: 8 + 34 header above, 10 below. */
+const ISLAND_EXTRA = 52;
+/** Card height around the head and the taller column: borders, paddings, gaps. */
+const CARD_EXTRA = 44;
+
+/** Natural height of a column: its sections, not the space it was stretched to. */
+function columnHeight(col: Element): number {
+  const kids = [...col.children] as HTMLElement[];
+  return kids.reduce((sum, k) => sum + k.offsetHeight, 0) + Math.max(0, kids.length - 1) * 8;
+}
+
+export function buildSession(actions: ViewActions, onHeightChange: () => void): ViewHost {
   const body = h("div", { class: "ss-body" });
   const back = h(
     "button",
@@ -139,7 +155,7 @@ export function buildSession(actions: ViewActions): ViewHost {
     {
       class: "icon-btn jump",
       title: "Go to this chat",
-      style: "right:32px",
+      style: "right:34px",
       onclick: () => {
         const id = State.focusTask?.id;
         if (id) actions.focusSession(id);
@@ -210,12 +226,12 @@ export function buildSession(actions: ViewActions): ViewHost {
     if (d.subagents > 0) {
       meta.push(h("span", { class: "ss-chip", text: `${d.subagents} subagent${d.subagents > 1 ? "s" : ""}` }));
     }
-    if (usage && usage.usd > 0) {
+    if (usage && usage.inputTokens + usage.outputTokens > 0) {
       meta.push(h("span", {
         class: "ss-chip",
-        text: `Today ≈ $${usage.usd < 10 ? usage.usd.toFixed(2) : Math.round(usage.usd)}`,
-        title: `Every chat today: ${tokens(usage.inputTokens)} in, ${tokens(usage.outputTokens)} out. ` +
-          "API prices, an estimate: a plan is not billed per token.",
+        text: `Today · ${tokens(usage.inputTokens + usage.outputTokens)} tokens`,
+        title: `Every chat on this computer since midnight: ${tokens(usage.inputTokens)} read, ` +
+          `${tokens(usage.outputTokens)} written.`,
       }));
     }
     const head = h(
@@ -288,7 +304,15 @@ export function buildSession(actions: ViewActions): ViewHost {
         : null,
     );
 
-    body.append(head, h("div", { class: "ss-grid" }, left, right));
+    const grid = h("div", { class: "ss-grid" }, left, right);
+    body.append(head, grid);
+
+    // As tall as the content, between SESSION_MIN_H and SESSION_MAX_H: a chat
+    // that just started does not leave half the island empty.
+    if (State.view === "session" && el.isConnected) {
+      const content = head.offsetHeight + Math.max(columnHeight(left), columnHeight(right));
+      if (setSessionHeight(content + CARD_EXTRA + ISLAND_EXTRA)) onHeightChange();
+    }
   }
 
   return {

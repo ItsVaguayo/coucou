@@ -262,7 +262,8 @@ export class Island {
   private wireFsm() {
     this.fsm.homeToPetitDelay = State.settings.autoCloseInterval;
     // While a song plays the compact island stays up to show it.
-    this.fsm.holdPetit = () => spotifyPlaying();
+    // A queue of notices keeps it up too, until the last one has had its turn.
+    this.fsm.holdPetit = () => spotifyPlaying() || this.toasts.active;
     this.fsm.onTransition = (from, to) => {
       switch (to) {
         case "hidden":
@@ -407,6 +408,40 @@ export class Island {
     if (task && State.focusId !== task.id) task.pillBadge = "finished";
     if (task) State.touch(task.id);
     this.toasts.push(m);
+    if (State.mode === "hidden") this.fsm.reveal();
+    State.notify();
+  }
+
+  /**
+   * A session out of focus finished (or failed): its notice joins the queue on
+   * the compact island, so several finishing together show one after another.
+   * With the island open, the pill's badge already says it.
+   */
+  sessionDone(taskId: string, failed: boolean) {
+    if (State.paused || State.mode === "expanded") return;
+    const task = State.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+    const said = task.detail?.tail?.lastText?.split("\n").find((l) => l.trim())?.trim();
+    this.toasts.push({
+      kind: "session",
+      from: task.name,
+      text: failed ? "Stopped on an error" : said || "Finished",
+      at: Date.now(),
+      color: failed ? "#F4505E" : task.color,
+      icon: failed ? "xmark" : "check",
+      // The chat's own Mochi, happy or not, with the ✓ / ✕ as a badge.
+      makeNode: () => {
+        // Drop the previous notice's Mochi first: this one is not in the page yet.
+        pruneMiniBots();
+        return createMiniBot({ ...task, state: failed ? "error" : "finished" }, 18);
+      },
+      ms: 4500,
+      onShow: () => Sound.play(failed ? "error" : "finish"),
+      onOpen: () => {
+        State.setFocus(task.id);
+        void this.focusSession(task.id);
+      },
+    });
     if (State.mode === "hidden") this.fsm.reveal();
     State.notify();
   }
