@@ -13,7 +13,7 @@ export interface ToastMessage {
   /** Contact photo (data: URL) when the site sent one. */
   image?: string;
   /** Absent: a WhatsApp message. "session": a Claude Code session notice. */
-  kind?: "whatsapp" | "session";
+  kind?: "whatsapp" | "session" | "discord";
   /** Bubble colour (the session's colour); WhatsApp green when absent. */
   color?: string;
   icon?: keyof typeof ICONS;
@@ -71,7 +71,8 @@ export function createToasts(onChange: () => void, onOpen: () => void): Toasts {
     if (current) {
       from.textContent = current.from;
       text.textContent = current.text || "New message";
-      el.title = current.kind === "session" ? "Go to this chat" : "Open WhatsApp";
+      el.title =
+        current.kind === "session" ? "Go to this chat" : current.kind === "discord" ? "Open Discord" : "Open WhatsApp";
       if (current.image) photo.src = current.image;
       else photo.removeAttribute("src");
       icon.classList.toggle("has-photo", Boolean(current.image));

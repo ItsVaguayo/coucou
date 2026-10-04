@@ -33,6 +33,16 @@ pub struct Settings {
     /// Size of the compact island: 0.85 small, 1 normal, 1.2 large.
     #[serde(default = "default_scale")]
     pub island_scale: f64,
+    /// What each session's Mochi wears ("sunglasses", "beanie"…), keyed by session id.
+    #[serde(default)]
+    pub mochi_accessories: BTreeMap<String, String>,
+    /// Global key that toggles Discord's mute: "Pause", "ScrollLock", "F13", "F14" or "" (off).
+    #[serde(default = "default_mute_key")]
+    pub discord_mute_key: String,
+}
+
+fn default_mute_key() -> String {
+    "Pause".into()
 }
 
 fn default_scale() -> f64 {
@@ -64,6 +74,8 @@ impl Default for Settings {
             session_names: BTreeMap::new(),
             island_offset: 0.0,
             island_scale: 1.0,
+            mochi_accessories: BTreeMap::new(),
+            discord_mute_key: default_mute_key(),
         }
     }
 }

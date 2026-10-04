@@ -3,6 +3,8 @@
 mod claude;
 #[cfg(target_os = "linux")]
 mod desktop;
+#[cfg(target_os = "linux")]
+mod discord;
 mod files;
 mod hooks;
 mod integrations;
@@ -70,6 +72,10 @@ fn save_settings(app: AppHandle, shared: State<Shared>, settings: Settings) {
         let screen_changed =
             current.screen != settings.screen || current.island_offset != settings.island_offset;
         let autostart_changed = current.autostart != settings.autostart;
+        #[cfg(target_os = "linux")]
+        if current.discord_mute_key != settings.discord_mute_key {
+            discord::set_mute_key(&settings.discord_mute_key);
+        }
         *current = settings.clone();
         (screen_changed, autostart_changed)
     };
@@ -278,19 +284,27 @@ fn ingest_file(path: String) -> Result<DroppedFile, String> {
 }
 
 /// The island may only ask whether a key exists — never read it.
+// Async + spawn_blocking: a sync command runs on the main thread, and a keyring
+// call (D-Bus, possibly a locked keyring) froze the island while it waited.
 #[tauri::command]
-fn secret_present(key: String) -> bool {
-    secrets::present(&key)
+async fn secret_present(key: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || secrets::present(&key))
+        .await
+        .unwrap_or(false)
 }
 
 #[tauri::command]
-fn secret_set(key: String, value: String) -> Result<(), String> {
-    secrets::set(&key, &value)
+async fn secret_set(key: String, value: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || secrets::set(&key, &value))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-fn secret_clear(key: String) -> Result<(), String> {
-    secrets::clear(&key)
+async fn secret_clear(key: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || secrets::clear(&key))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Opens the configured n8n instance — the URL lives in the Credential Manager.
@@ -314,6 +328,33 @@ fn media_control(action: String) {
     desktop::spotify_control(&action);
     #[cfg(not(target_os = "linux"))]
     let _ = action;
+}
+
+/// Discord card buttons and the toast: "mute", "deaf", "leave" or "open".
+#[tauri::command]
+fn discord_control(action: String) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if action == "open" {
+            desktop::open_discord();
+            return true;
+        }
+        discord::control(&action)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = action;
+        false
+    }
+}
+
+/// Settings → Connect: Discord shows its own "Authorize?" prompt.
+#[tauri::command]
+fn discord_connect() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    return discord::authorize();
+    #[cfg(not(target_os = "linux"))]
+    Err("Discord is only wired on Linux for now.".into())
 }
 
 /// Clicking a WhatsApp message on the island.
@@ -423,6 +464,12 @@ fn create_settings_window(app: &AppHandle) {
 }
 
 pub fn show_settings_window(app: &AppHandle) {
+    // Only WebView2 needs it built up front; elsewhere it is built on first use
+    // so launching doesn't pay for a second webview nobody may open.
+    #[cfg(not(windows))]
+    if app.get_webview_window("settings").is_none() {
+        create_settings_window(app);
+    }
     let Some(win) = app.get_webview_window("settings") else {
         log::line("settings window missing");
         return;
@@ -486,11 +533,15 @@ pub fn run() {
             set_paused,
             media_control,
             open_whatsapp,
+            discord_control,
+            discord_connect,
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::build(&handle)?;
-            // Before the island: see create_settings_window.
+            // Before the island: see create_settings_window. Windows only: on
+            // Linux it is a second WebKit process and page load at every launch.
+            #[cfg(windows)]
             create_settings_window(&handle);
 
             if let Some(win) = island::window(&handle) {
@@ -512,7 +563,12 @@ pub fn run() {
             pipe::start(handle.clone());
             integrations::start(handle.clone());
             #[cfg(target_os = "linux")]
-            desktop::start(handle.clone());
+            {
+                desktop::start(handle.clone());
+                discord::start(handle.clone());
+                let key = handle.state::<Shared>().settings.lock().unwrap().discord_mute_key.clone();
+                discord::start_mute_key(&key);
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

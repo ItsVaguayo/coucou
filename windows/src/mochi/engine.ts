@@ -35,7 +35,17 @@ interface Tween {
 }
 
 /** One-off reactions of a mini Mochi to its chat, the mouse, or coming and going. */
-export type MiniReaction = "done" | "ask" | "fail" | "hover" | "press" | "hello" | "bye";
+export const ACCESSORIES = [
+  "none", "sunglasses", "glasses", "beanie", "cap", "tophat", "crown", "party", "bow",
+] as const;
+export type Accessory = (typeof ACCESSORIES)[number];
+
+/** A saved accessory id, or "none" if it is missing or unknown. */
+export function asAccessory(id: string | undefined): Accessory {
+  return (ACCESSORIES as readonly string[]).includes(id ?? "") ? (id as Accessory) : "none";
+}
+
+export type MiniReaction ="done" | "ask" | "fail" | "hover" | "press" | "hello" | "bye";
 
 /** Gestures a Mochi makes for no reason at all, now and then. */
 export const MOODS = [
@@ -205,6 +215,16 @@ export class BotEngine {
   /** Spotify is playing: Mochi wears headphones (eased in and out). */
   headphones = false;
   private headphonesT = 0;
+  /** In a Discord call: headphones in Discord's colour; red cups when deafened. */
+  call = false;
+  deafened = false;
+  /** Muted on Discord: a plaster across her mouth. */
+  micMuted = false;
+  private muteT = 0;
+  /** Discord's Mochi borrows a little from Wumpus, its mascot: tall soft ears. */
+  wumpus = false;
+  /** What she wears: glasses or something on her head (drawn in code like the rest). */
+  accessory: Accessory = "none";
 
   // Animated state (BotEngine `s`)
   yaw = 0; pitch = 0; roll = 0; tilt = 0; open = 1;
@@ -646,11 +666,23 @@ export class BotEngine {
 
   /** True while anything is still moving — lets the island stop its RAF loop. */
   get busy(): boolean {
+    return this.ambient || this.active;
+  }
+
+  /** Looping life (breathing, z's, idle routine): smooth enough at a lower frame rate. */
+  get ambient(): boolean {
+    return (
+      this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
+      this.isMini || this.idleLife
+    );
+  }
+
+  /** A tween, a reaction or a spring still moving: needs every frame. */
+  get active(): boolean {
     return (
       this.tweens.size > 0 ||
       this.particles.length > 0 ||
-      this.cfg.bounces || this.cfg.scans || this.cfg.breathes || this.cfg.zz || this.cfg.sweat ||
-      this.isMini || this.idleLife || now() < this.reactingUntil ||
+      now() < this.reactingUntil ||
       Math.abs(this.tgYaw - this.yaw) > 0.002 ||
       Math.abs(this.tgPitch - this.pitch) > 0.002 ||
       Math.abs(this.tgTilt - this.tilt) > 0.002 ||
@@ -858,6 +890,7 @@ export class BotEngine {
     x.scale(this.sx, this.sy);
 
     const body = this.bodyPath(rx, ry, R);
+    if (this.wumpus && this.morph < 0.5) this.drawEars(x, R, rx, ry);
     this.drawBody(x, body, R, rx, ry);
 
     const blushVal = Math.max(this.blush, this.tint * 0.5) * (1 - this.morph);
@@ -874,11 +907,28 @@ export class BotEngine {
       x.restore();
     }
 
+    // Clipped to her outline like the eyes, so looking far down never takes the
+    // snout or the plaster past the edge of her body.
+    if (this.wumpus && this.morph < 0.5) {
+      x.save();
+      x.clip(body);
+      this.drawSnout(x, R, rx, ry);
+      x.restore();
+    }
     this.drawEyes(x, body, R, rx, ry);
     if (this.morph > 0.05) this.drawMouth(x, body, R);
 
-    this.headphonesT += ((this.headphones ? 1 : 0) - this.headphonesT) * 0.12;
-    if (this.headphonesT > 0.02 && this.morph < 0.5) this.drawHeadphones(x, R, rx, ry, this.headphonesT);
+    this.headphonesT += ((this.headphones || this.call ? 1 : 0) - this.headphonesT) * 0.12;
+    const cups = this.call ? (this.deafened ? "#F4505E" : "#5865F2") : "#1DB954";
+    if (this.headphonesT > 0.02 && this.morph < 0.5) this.drawHeadphones(x, R, rx, ry, this.headphonesT, cups);
+    this.muteT += ((this.micMuted ? 1 : 0) - this.muteT) * 0.15;
+    if (this.muteT > 0.02 && this.morph < 0.5) {
+      x.save();
+      x.clip(body);
+      this.drawPlaster(x, R, rx, ry, this.muteT);
+      x.restore();
+    }
+    if (this.accessory !== "none" && this.morph < 0.5) this.drawAccessory(x, R, rx, ry);
 
     x.restore();
 
@@ -889,7 +939,92 @@ export class BotEngine {
   }
 
   /** Band over the top, a cup on each side; slides down from above as it eases in. */
-  private drawHeadphones(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, t: number) {
+  /**
+   * Wumpus-style ears: on the sides of her head, sticking out and a little up,
+   * rounded, with a lighter inside. They follow her yaw and droop while she sleeps.
+   */
+  private drawEars(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const base = this.bodyColor ?? BASE_TOP;
+    const outer = rgba(mix3(base, [0, 0, 0], 0.12));
+    const inner = rgba(mix3(base, [1, 1, 1], 0.45));
+    const droop = this.state === "sleeping" ? 0.45 : 0;
+    const w = R * 0.62;
+    const h = R * 0.4;
+    for (const sd of [-1, 1]) {
+      x.save();
+      x.translate(sd * rx * 0.86 + Math.sin(this.yaw) * rx * 0.15, -ry * 0.42);
+      // Pointing outwards, tipped up; drooping lowers the tip.
+      x.rotate(sd * (-0.45 + droop) + this.yaw * 0.12);
+      x.fillStyle = outer;
+      x.beginPath();
+      x.ellipse(sd * w * 0.32, 0, w / 2, h / 2, 0, 0, Math.PI * 2);
+      x.fill();
+      x.fillStyle = inner;
+      x.beginPath();
+      x.ellipse(sd * w * 0.36, 0, w * 0.3, h * 0.24, 0, 0, Math.PI * 2);
+      x.fill();
+      x.restore();
+    }
+  }
+
+  /** How far her eyes have moved up or down from rest (looking up/down, rolling):
+   *  the snout and the plaster move with them so the face stays together. */
+  private faceDy(ry: number): number {
+    return (Math.sin(EYE_P) - Math.sin(EYE_P + this.pitch + this.roll)) * ry;
+  }
+
+  /** Wumpus's little piggy snout, under the eyes; it turns with her face. */
+  private drawSnout(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const base = this.bodyColor ?? BASE_TOP;
+    x.save();
+    x.translate(Math.sin(this.yaw) * rx * 0.8, ry * 0.36 + this.faceDy(ry));
+    x.scale(Math.max(0.4, Math.cos(this.yaw)), 1);
+    const w = R * (this.isMini ? 0.5 : 0.4);
+    const hh = w * 0.62;
+    x.fillStyle = rgba(mix3(base, [1, 1, 1], 0.38));
+    x.beginPath();
+    x.ellipse(0, 0, w / 2, hh / 2, 0, 0, Math.PI * 2);
+    x.fill();
+    x.fillStyle = rgba(mix3(base, [0, 0, 0], 0.45));
+    for (const sd of [-1, 1]) {
+      x.beginPath();
+      x.ellipse(sd * w * 0.17, 0, w * 0.07, hh * 0.17, 0, 0, Math.PI * 2);
+      x.fill();
+    }
+    x.restore();
+  }
+
+  /** Two crossed strips of plaster where her mouth would be; pops in with a little scale. */
+  private drawPlaster(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, t: number) {
+    x.save();
+    x.globalAlpha = Math.min(1, t * 1.3);
+    // Low on her face, clear of the eyes, where a mouth would be.
+    // On Wumpus she tapes over the snout instead.
+    x.translate(Math.sin(this.yaw) * rx * 0.8, ry * (this.wumpus ? 0.37 : 0.58) + this.faceDy(ry));
+    x.scale(0.6 + 0.4 * t, 0.6 + 0.4 * t);
+    const w = R * (this.isMini ? 0.55 : 0.38);
+    const hh = w * 0.3;
+    for (const a of [-0.45, 0.45]) {
+      x.save();
+      x.rotate(a);
+      x.fillStyle = "#f1d2a6";
+      x.beginPath();
+      x.roundRect(-w / 2, -hh / 2, w, hh, hh * 0.35);
+      x.fill();
+      x.fillStyle = "rgba(150,110,70,0.35)";
+      for (const dx of [-0.25, 0, 0.25]) {
+        x.beginPath();
+        x.arc(dx * w, 0, hh * 0.1, 0, Math.PI * 2);
+        x.fill();
+      }
+      x.restore();
+    }
+    x.restore();
+  }
+
+  private drawHeadphones(
+    x: CanvasRenderingContext2D, R: number, rx: number, ry: number, t: number, cupColor = "#1DB954",
+  ) {
     x.save();
     x.globalAlpha = Math.min(1, t * 1.4);
     x.translate(0, -(1 - t) * R * 0.6);
@@ -917,7 +1052,7 @@ export class BotEngine {
       x.beginPath();
       x.roundRect(cxp - cw / 2, cyp - ch / 2, cw, ch, cw * 0.45);
       x.fill();
-      x.fillStyle = "#1DB954";
+      x.fillStyle = cupColor;
       x.beginPath();
       x.roundRect(cxp - cw * 0.22 + sd * cw * 0.12, cyp - ch * 0.32, cw * 0.44, ch * 0.64, cw * 0.22);
       x.fill();
@@ -925,7 +1060,200 @@ export class BotEngine {
     x.restore();
   }
 
+  private drawAccessory(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    x.save();
+    x.globalAlpha = 1 - this.morph * 2;
+    if (this.accessory === "sunglasses" || this.accessory === "glasses") {
+      this.drawGlasses(x, R, rx, ry, this.accessory === "sunglasses");
+    } else {
+      // Hats ride on top of her head and follow it a little when she turns.
+      x.translate(Math.sin(this.yaw) * rx * 0.3, -ry * 0.62);
+      x.rotate(Math.sin(this.yaw) * 0.12);
+      this.drawHat(x, R, rx, ry);
+    }
+    x.restore();
+  }
+
+  /** Same eye centres as drawEyes; null for an eye turned away. */
+  private eyeCentre(sd: number, rx: number, ry: number): { x: number; y: number; f: number } | null {
+    const eyeYaw = sd * EYE_SP + this.yaw;
+    let eyePitch = EYE_P + this.pitch + this.roll;
+    eyePitch = (((eyePitch + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2) - Math.PI;
+    const cp = Math.cos(eyePitch);
+    if (Math.cos(eyeYaw) * cp <= 0.2) return null;
+    return { x: Math.sin(eyeYaw) * cp * rx, y: -Math.sin(eyePitch) * ry, f: Math.cos(eyeYaw) };
+  }
+
+  private drawGlasses(x: CanvasRenderingContext2D, R: number, rx: number, ry: number, dark: boolean) {
+    const k = this.isMini ? 1.6 : 1.25;
+    const r = R * 0.2 * k;
+    const eyes = [this.eyeCentre(-1, rx, ry), this.eyeCentre(1, rx, ry)];
+    x.lineWidth = R * (this.isMini ? 0.09 : 0.055);
+    x.strokeStyle = dark ? "#121417" : "#3b2a20";
+    x.lineCap = "round";
+
+    const [l, rt] = eyes;
+    if (l && rt) {
+      x.beginPath();
+      x.moveTo(l.x + r * l.f * 0.9, l.y - r * 0.25);
+      x.quadraticCurveTo((l.x + rt.x) / 2, l.y - r * 0.6, rt.x - r * rt.f * 0.9, rt.y - r * 0.25);
+      x.stroke();
+    }
+    for (const e of eyes) {
+      if (!e) continue;
+      x.save();
+      x.translate(e.x, e.y);
+      x.scale(Math.max(0.3, e.f), 1);
+      x.beginPath();
+      if (dark) x.roundRect(-r * 1.1, -r * 0.8, r * 2.2, r * 1.6, r * 0.7);
+      else x.arc(0, 0, r, 0, Math.PI * 2);
+      if (dark) {
+        const g = x.createLinearGradient(0, -r, 0, r);
+        g.addColorStop(0, "#2b3038");
+        g.addColorStop(1, "#0b0c0f");
+        x.fillStyle = g;
+        x.fill();
+        x.fillStyle = "rgba(255,255,255,0.35)";
+        x.beginPath();
+        x.ellipse(-r * 0.4, -r * 0.35, r * 0.32, r * 0.14, -0.4, 0, Math.PI * 2);
+        x.fill();
+      } else {
+        x.fillStyle = "rgba(200,230,255,0.18)";
+        x.fill();
+        x.stroke();
+      }
+      x.restore();
+    }
+  }
+
+  /** Drawn with (0,0) at the crown of her head; y grows downwards. */
+  private drawHat(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    const ellipse = (cx: number, cy: number, w: number, h: number, fill: string) => {
+      x.fillStyle = fill;
+      x.beginPath();
+      x.ellipse(cx, cy, w, h, 0, 0, Math.PI * 2);
+      x.fill();
+    };
+    switch (this.accessory) {
+      case "beanie": {
+        x.fillStyle = "#d8463f";
+        x.beginPath();
+        x.ellipse(0, -ry * 0.05, rx * 0.8, ry * 0.62, 0, Math.PI, Math.PI * 2);
+        x.fill();
+        x.strokeStyle = "rgba(0,0,0,0.12)";
+        x.lineWidth = R * 0.035;
+        for (const i of [-2, -1, 0, 1, 2]) {
+          x.beginPath();
+          x.moveTo(i * rx * 0.24, -ry * 0.05);
+          x.quadraticCurveTo(i * rx * 0.12, -ry * 0.5, 0, -ry * 0.66);
+          x.stroke();
+        }
+        x.fillStyle = "#b8352f";
+        x.beginPath();
+        x.roundRect(-rx * 0.88, -ry * 0.12, rx * 1.76, ry * 0.3, ry * 0.15);
+        x.fill();
+        ellipse(0, -ry * 0.72, R * 0.16, R * 0.16, "#f4f1ea");
+        break;
+      }
+      case "cap": {
+        x.fillStyle = "#2f6fdb";
+        x.beginPath();
+        x.ellipse(0, 0, rx * 0.78, ry * 0.55, 0, Math.PI, Math.PI * 2);
+        x.fill();
+        // Visor towards her right, the way she looks.
+        ellipse(rx * 0.52, R * 0.02, rx * 0.55, ry * 0.12, "#1f4fa8");
+        ellipse(0, -ry * 0.55, R * 0.06, R * 0.05, "#1f4fa8");
+        break;
+      }
+      case "tophat": {
+        ellipse(0, 0, rx * 0.72, ry * 0.12, "#16181c");
+        const g = x.createLinearGradient(-rx * 0.45, 0, rx * 0.45, 0);
+        g.addColorStop(0, "#2a2d33");
+        g.addColorStop(1, "#111216");
+        x.fillStyle = g;
+        x.beginPath();
+        x.roundRect(-rx * 0.44, -ry * 0.82, rx * 0.88, ry * 0.84, R * 0.06);
+        x.fill();
+        x.fillStyle = "#b03035";
+        x.fillRect(-rx * 0.44, -ry * 0.2, rx * 0.88, ry * 0.14);
+        break;
+      }
+      case "crown": {
+        const w = rx * 0.62;
+        const hgt = ry * 0.6;
+        x.fillStyle = "#f5c518";
+        x.beginPath();
+        x.moveTo(-w, 0);
+        x.lineTo(-w, -hgt * 0.8);
+        x.lineTo(-w * 0.5, -hgt * 0.4);
+        x.lineTo(0, -hgt);
+        x.lineTo(w * 0.5, -hgt * 0.4);
+        x.lineTo(w, -hgt * 0.8);
+        x.lineTo(w, 0);
+        x.closePath();
+        x.fill();
+        x.fillStyle = "rgba(0,0,0,0.12)";
+        x.fillRect(-w, -hgt * 0.18, w * 2, hgt * 0.18);
+        ellipse(0, -hgt * 0.4, R * 0.07, R * 0.07, "#d23b5a");
+        for (const sd of [-1, 1]) ellipse(sd * w * 0.62, -hgt * 0.2, R * 0.05, R * 0.05, "#2f8fdb");
+        break;
+      }
+      case "party": {
+        const w = rx * 0.42;
+        const hgt = ry * 1.0;
+        x.fillStyle = "#8b5cf6";
+        x.beginPath();
+        x.moveTo(-w, 0);
+        x.lineTo(0, -hgt);
+        x.lineTo(w, 0);
+        x.closePath();
+        x.fill();
+        x.save();
+        x.clip();
+        x.fillStyle = "#f5c518";
+        for (const f of [0.25, 0.6]) {
+          x.beginPath();
+          x.moveTo(-w, -hgt * f);
+          x.lineTo(w, -hgt * (f + 0.25));
+          x.lineTo(w, -hgt * (f + 0.12));
+          x.lineTo(-w, -hgt * (f - 0.13));
+          x.fill();
+        }
+        x.restore();
+        ellipse(0, -hgt, R * 0.1, R * 0.1, "#f472b6");
+        break;
+      }
+      case "bow": {
+        x.translate(rx * 0.42, ry * 0.02);
+        x.rotate(0.35);
+        x.fillStyle = "#f05a8a";
+        for (const sd of [-1, 1]) {
+          x.beginPath();
+          x.moveTo(0, 0);
+          x.quadraticCurveTo(sd * R * 0.42, -R * 0.36, sd * R * 0.42, 0);
+          x.quadraticCurveTo(sd * R * 0.42, R * 0.36, 0, 0);
+          x.fill();
+        }
+        ellipse(0, 0, R * 0.09, R * 0.09, "#d63d70");
+        break;
+      }
+    }
+  }
+
+  private bodyPathKey = "";
+  private bodyPathCache: Path2D | null = null;
+
+  /** The body outline, rebuilt only when its size or morph changes (72 pow() pairs). */
   private bodyPath(rx: number, ry: number, R: number): Path2D {
+    const key = `${rx}|${ry}|${R}|${this.morph}`;
+    if (key !== this.bodyPathKey || !this.bodyPathCache) {
+      this.bodyPathKey = key;
+      this.bodyPathCache = this.buildBodyPath(rx, ry, R);
+    }
+    return this.bodyPathCache;
+  }
+
+  private buildBodyPath(rx: number, ry: number, R: number): Path2D {
     const n = 72;
     const expN = 2.0 / 2.7;
     const tw = R * 1.0;

@@ -31,6 +31,8 @@ export interface ViewActions {
   focusSession(id: string): void;
   /** Colour for every session in this folder; null goes back to the automatic one. */
   setProjectColor(cwd: string, color: string | null): void;
+  /** What a session's Mochi wears; null takes it off. */
+  setSessionAccessory(sessionId: string, accessory: string | null): void;
   /** Names a Claude Code session by hand; null goes back to the folder's name. */
   setSessionName(sessionId: string, name: string | null): void;
   /** Keeps the open island open (header pin), or lets it close again. */
@@ -275,7 +277,7 @@ function buildOverview(actions: ViewActions): ViewHost {
       const picking = pickerFor ? State.tasks.find((t) => t.id === pickerFor) ?? null : null;
       if (pickerFor && !picking) pickerFor = null;
       const pillKey = picking
-        ? `picker:${picking.id}:${picking.color}`
+        ? `picker:${picking.id}:${picking.color}:${State.settings.mochiAccessories?.[picking.sessionId ?? ""] ?? ""}`
         : `${showAll}~${recent.length}~` +
           others.map((t) => `${t.id}:${t.pillBadge ?? ""}:${t.color}:${t.name}:${t.detail?.contextWarned ?? ""}`).join("|");
       if (pillKey !== pillIds) {

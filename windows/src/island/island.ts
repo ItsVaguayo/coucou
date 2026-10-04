@@ -2,6 +2,7 @@
 // Mirrors IslandRootView.swift + IslandWindowController.swift.
 
 import { createNowPlaying, spotifyPlaying, spotifyShown, NOW_PLAYING_W } from "../views/nowplaying";
+import { createVoiceStrip, discordInCall, VOICE_W } from "../views/voicecall";
 import { createToasts, TOAST_W, type ToastMessage } from "../views/toast";
 import { Tracked, Spring, clamp } from "../core/anim";
 import { Bridge, IS_TAURI, onDragDrop } from "../core/bridge";
@@ -16,6 +17,7 @@ import { State } from "../core/state";
 import { BotEngine, hexToRGB, randomMood } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import {
+  accessoryOf,
   REACTION, createMiniBot, miniBotsReacting, moodRandomMini, pruneMiniBots, setMiniGridScale,
   syncMiniBotStates, tickMiniBots,
 } from "../mochi/minibots";
@@ -48,6 +50,8 @@ const SESSION_NAME_MAX = 24;
 const SESSION_NAMES_KEPT = 40;
 /** How far a press has to travel before it is a drag rather than a click. */
 const DRAG_SLOP = 5;
+/** Frame rate for a Mochi that is only breathing or living her idle life. */
+const AMBIENT_FPS = 30;
 /** Sizes offered for the compact island, picked in Settings. */
 export const COMPACT_SCALES = [0.85, 1, 1.2] as const;
 
@@ -58,7 +62,8 @@ export const COMPACT_SCALES = [0.85, 1, 1.2] as const;
  */
 function renderScale(k: number): number {
   const exact = (window.devicePixelRatio || 1) * Math.max(1, k);
-  return Math.min(3, Math.ceil(exact * 4) / 4);
+  // Capped at 2: each extra step is ~2× the pixels, all painted on the CPU in WebKitGTK.
+  return Math.min(2, Math.ceil(exact * 4) / 4);
 }
 
 function compactScale(): number {
@@ -81,6 +86,7 @@ export class Island {
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
   private nowPlaying = createNowPlaying();
+  private voiceStrip = createVoiceStrip();
   private compactLayout = "";
   private toasts = createToasts(() => State.notify(), () => void Bridge.openWhatsApp());
   private countdown!: HTMLElement;
@@ -104,6 +110,9 @@ export class Island {
 
   private running = false;
   private lastFrame = 0;
+  /** When the Mochis were last drawn, and the time gathered since for their update. */
+  private lastDraw = 0;
+  private drawDt = 0;
   private dirty = true;
   private canvasDpr = 0;
   private canvasPx = 0;
@@ -114,6 +123,10 @@ export class Island {
   private wasInIsland = false;
   /** Last shape handed to Rust for the click-through test. */
   private pushedRect = { x: -1, y: -1, w: -1, h: -1 };
+  private pushedAt = 0;
+  private geoKey = "";
+  private glowKey = "";
+  private lastHoverFace = 0;
   private homeCollapseAt: number | null = null;
 
   // Bot hover → love (IslandWindowController.botHoverIn)
@@ -239,6 +252,18 @@ export class Island {
         applySessionPrefs();
         Sound.play("blip");
       },
+      setSessionAccessory: (sessionId, accessory) => {
+        if (!sessionId) return;
+        const worn = { ...State.settings.mochiAccessories };
+        delete worn[sessionId];
+        if (accessory && accessory !== "none") worn[sessionId] = accessory;
+        const keys = Object.keys(worn);
+        for (const k of keys.slice(0, Math.max(0, keys.length - SESSION_NAMES_KEPT))) delete worn[k];
+        State.settings.mochiAccessories = worn;
+        void Bridge.saveSettings(State.settings);
+        State.notify();
+        Sound.play("blip");
+      },
       setSessionName: (sessionId, name) => {
         if (!sessionId) return;
         const names = { ...State.settings.sessionNames };
@@ -294,6 +319,7 @@ export class Island {
       this.botCanvas,
       this.miniGrid,
       this.nowPlaying.el,
+      this.voiceStrip.el,
       this.toasts.el,
       this.countdown,
     );
@@ -453,11 +479,11 @@ export class Island {
   }
 
   /** A WhatsApp message: on the compact island for a few seconds. */
-  showMessage(m: ToastMessage) {
+  showMessage(m: ToastMessage, pill = "integration_whatsapp") {
     if (State.paused) return;
     Sound.play("pop");
     this.engine.triggerEmote("surprised");
-    const task = State.tasks.find((t) => t.id === "integration_whatsapp");
+    const task = State.tasks.find((t) => t.id === pill);
     if (task && State.focusId !== task.id) task.pillBadge = "finished";
     if (task) State.touch(task.id);
     this.toasts.push(m);
@@ -661,6 +687,7 @@ export class Island {
     const w =
       State.mode !== "compact" ? size.w
         : this.toasts.active ? TOAST_W
+          : discordInCall() ? VOICE_W
           : spotifyShown() ? NOW_PLAYING_W
             : size.w;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
@@ -692,6 +719,11 @@ export class Island {
     const w = this.width.value;
     const hh = this.height.value;
     const r = this.radius.value;
+    // Called every frame; once the island has settled there is nothing to
+    // write, and each style write made WebKit lay the island out again.
+    const geoKey = `${w}|${hh}|${r}|${this.zoom.value}|${this.targetZoom()}|${window.devicePixelRatio}`;
+    if (geoKey === this.geoKey) return;
+    this.geoKey = geoKey;
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
@@ -709,8 +741,14 @@ export class Island {
 
     const rect = this.islandRect();
     const p = this.pushedRect;
+    const moving = this.width.animating || this.height.animating || this.zoom.animating;
+    const now = performance.now();
+    // While it morphs, the click-through region (an X11 request on the main
+    // thread) follows at ~20 Hz; the frame it settles always goes through.
+    if (moving && now - this.pushedAt < 50) return;
     if (Math.abs(p.x - rect.x) > 0.5 || Math.abs(p.w - rect.w) > 0.5 || Math.abs(p.h - rect.h) > 0.5) {
       this.pushedRect = rect;
+      this.pushedAt = now;
       void Bridge.setIslandRect(rect.x, rect.y, rect.w, rect.h);
     }
   }
@@ -891,11 +929,17 @@ export class Island {
   }
 
   private botHoverIn(x: number, y: number) {
-    if (performance.now() / 1000 - this.lastLoveTime < 6) return;
     this.botHoverStart = { x, y };
-    this.engine.blink();
     this.engine.tgEs = 1.08;
-    Sound.play("hover");
+    // The same happy face the minis make, right away. Not again within a second,
+    // so a cursor resting on her edge doesn't make her hop over and over.
+    const t = performance.now() / 1000;
+    if (t - this.lastHoverFace > 1) {
+      this.lastHoverFace = t;
+      this.engine.miniReact("hover");
+      Sound.play("hover");
+    }
+    // Staying on her still earns the hearts (scheduleLove keeps its own 6 s gap).
     this.scheduleLove();
   }
 
@@ -974,10 +1018,24 @@ export class Island {
         gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.greeting.draw(gctx);
       }
-    } else {
+    }
+
+    // Breathing and idle life alone are drawn at AMBIENT_FPS: every canvas is
+    // painted on the CPU in WebKitGTK, and 60 fps of a Mochi that only breathes
+    // kept a core busy. Anything that moves for real still gets every frame.
+    const lively =
+      !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
+      this.engine.active || miniBotsReacting() || UploadSeq.isActive ||
+      this.width.animating || this.height.animating;
+    this.drawDt = Math.min(0.1, this.drawDt + dt);
+    const drawNow = lively || nowMs - this.lastDraw >= 1000 / AMBIENT_FPS - 2;
+    if (drawNow) {
       // Kept running even while the drop canvas is up, so the island's own Mochi
       // is already in the right place the moment the canvas fades out.
-      this.drawBot(dt);
+      if (!greetingActive) this.drawBot(this.drawDt);
+      tickMiniBots(this.drawDt);
+      this.lastDraw = nowMs;
+      this.drawDt = 0;
     }
 
     const uploadActive = this.uploadActive;
@@ -985,7 +1043,6 @@ export class Island {
     this.uploadCanvas.el.classList.toggle("on", uploadActive);
     this.viewsEl.classList.toggle("hidden-by-upload", uploadActive);
 
-    tickMiniBots(dt);
     this.views.get(State.view)?.tick?.(nowMs);
     if (UploadSeq.isActive) this.stepSequence();
     this.updateCountdown(nowMs);
@@ -1002,7 +1059,10 @@ export class Island {
       ? settling
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
-        greetingActive || this.engine.busy || UploadSeq.isActive || miniBotsReacting();
+        greetingActive || this.engine.busy || UploadSeq.isActive || miniBotsReacting() ||
+        // A frame skipped by the ambient cap still owes its draw: stopping here
+        // left the eyes where they were until the next cursor event.
+        !drawNow;
 
     if (busy) {
       requestAnimationFrame(this.frame);
@@ -1026,14 +1086,23 @@ export class Island {
     if (State.mode === "expanded" && State.view !== "uploading" && !greetingActive && !this.uploadActive) {
       const d = p.diameter;
       const color = botGlowColor(State.effectiveState);
-      this.botGlow.style.display = "block";
-      this.botGlow.style.width = `${d * 2.2}px`;
-      this.botGlow.style.height = `${d * 2.2}px`;
-      this.botGlow.style.left = `${this.botCx.value - d * 1.1}px`;
-      this.botGlow.style.top = `${this.botCy.value - d * 1.1}px`;
-      this.botGlow.style.background = `radial-gradient(circle, ${color} 0%, transparent 62%)`;
-      this.botGlow.style.opacity = String(botGlowOpacity(State.effectiveState));
-    } else {
+      // Written only when something changed: this runs every frame, and a
+      // restyled glow is a repaint of everything under it.
+      const key = `${d}|${this.botCx.value}|${this.botCy.value}|${color}|${State.effectiveState}`;
+      if (key !== this.glowKey) {
+        this.glowKey = key;
+        this.botGlow.style.display = "block";
+        this.botGlow.style.width = `${d * 2.2}px`;
+        this.botGlow.style.height = `${d * 2.2}px`;
+        this.botGlow.style.left = `${this.botCx.value - d * 1.1}px`;
+        this.botGlow.style.top = `${this.botCy.value - d * 1.1}px`;
+        // A wider fade instead of a CSS blur, which WebKitGTK re-rasterized on
+        // every move of the glow.
+        this.botGlow.style.background = `radial-gradient(circle, ${color} 0%, transparent 70%)`;
+        this.botGlow.style.opacity = String(botGlowOpacity(State.effectiveState));
+      }
+    } else if (this.glowKey !== "off") {
+      this.glowKey = "off";
       this.botGlow.style.display = "none";
     }
   }
@@ -1063,6 +1132,7 @@ export class Island {
 
     const focus = State.focusTask;
     this.engine.bodyColor = focus?.isIntegration ? hexToRGB(focus.color) : null;
+    this.engine.wumpus = focus?.id === "integration_discord";
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
@@ -1168,13 +1238,15 @@ export class Island {
     // Compact mini grid — or, while a song is loaded, the player in its place.
     const compact = State.mode === "compact";
     const toastOn = compact && this.toasts.active;
-    const playerOn = compact && !toastOn && spotifyShown();
-    const layoutKey = `${toastOn}|${playerOn}`;
+    // A Discord call takes the strip before the song does.
+    const callOn = compact && !toastOn && discordInCall();
+    const playerOn = compact && !toastOn && !callOn && spotifyShown();
+    const layoutKey = `${toastOn}|${playerOn}|${callOn}`;
     if (layoutKey !== this.compactLayout) {
       this.compactLayout = layoutKey;
-      if (compact) this.animateGeometry(!toastOn && !playerOn);
+      if (compact) this.animateGeometry(!toastOn && !playerOn && !callOn);
     }
-    const showGrid = compact && !playerOn && !toastOn;
+    const showGrid = compact && !playerOn && !toastOn && !callOn;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
       const others = State.recentTasks.slice(0, 4);
@@ -1190,9 +1262,20 @@ export class Island {
     }
 
     this.updateDim();
-    this.nowPlaying.sync(compact && !toastOn);
+    this.nowPlaying.sync(compact && !toastOn && !callOn);
+    this.voiceStrip.sync(callOn);
     this.toasts.sync(compact);
     this.engine.headphones = spotifyPlaying();
+    // In a Discord call she wears its headphones; muted, a plaster; deafened, red cups.
+    const dc = State.settings.activeIntegrations.includes("integration_discord")
+      ? State.integrations.integration_discord?.data
+      : undefined;
+    const inCall = dc?.running === true && dc?.channel != null;
+    this.engine.call = inCall;
+    this.engine.micMuted = inCall && (dc?.mute === true || dc?.deaf === true);
+    this.engine.deafened = inCall && dc?.deaf === true;
+    const focused = State.focusTask;
+    this.engine.accessory = focused ? accessoryOf(focused) : "none";
 
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);

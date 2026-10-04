@@ -24,11 +24,6 @@ async function main() {
   State.loadIntegrationTasks();
   if (boot && !boot.cursorPoll) island.followPageCursor();
 
-  await onEvent<boolean>("browser-focus", (on) => island.setBrowserFocus(on));
-  await onEvent<{ from: string; text: string; at: number; image?: string }>("whatsapp", (m) => island.showMessage(m));
-
-  await onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onPolledCursor(x, y));
-
   /** Pause has to reach Rust too, or the pollers keep calling out. */
   const setPaused = (on: boolean) => {
     if (State.paused === on) return;
@@ -36,34 +31,46 @@ async function main() {
     void Bridge.setPaused(on);
   };
 
-  await onEvent<string>("tray", (what) => {
-    switch (what) {
-      case "settings":
-        setPaused(false);
-        island.alert("settings");
-        break;
-      case "open":
-        setPaused(false);
-        island.alert(State.defaultView());
-        break;
-      case "pause":
-        setPaused(!State.paused);
-        if (State.paused) island.fsm.forceHidden();
-        else island.reveal();
-        break;
-    }
-  });
-
-  await onEvent<null>("screen-changed", () => void Bridge.reposition());
-
-  // The settings window writes preferences; apply them here without a restart.
-  await onEvent<Settings>("settings-changed", (s) => {
-    State.settings = { ...State.settings, ...s };
-    island.applySettings();
-    State.loadIntegrationTasks();
-    applySessionPrefs();
-    void refreshConfigured();
-  });
+  // Registered together: awaited one by one they were as many IPC round trips
+  // before the island could launch.
+  await Promise.all([
+    onEvent<boolean>("browser-focus", (on) => island.setBrowserFocus(on)),
+    onEvent<{ from: string; text: string; at: number; image?: string }>("whatsapp", (m) => island.showMessage(m)),
+    onEvent<{ from: string; text: string; at: number; image?: string }>("discord-message", (m) => {
+      if (!State.settings.activeIntegrations.includes("integration_discord")) return;
+      island.showMessage(
+        { ...m, kind: "discord", color: "#5865F2", onOpen: () => void Bridge.discordControl("open") },
+        "integration_discord",
+      );
+    }),
+    onEvent<{ x: number; y: number }>("cursor", ({ x, y }) => island.onPolledCursor(x, y)),
+    onEvent<string>("tray", (what) => {
+      switch (what) {
+        case "settings":
+          setPaused(false);
+          island.alert("settings");
+          break;
+        case "open":
+          setPaused(false);
+          island.alert(State.defaultView());
+          break;
+        case "pause":
+          setPaused(!State.paused);
+          if (State.paused) island.fsm.forceHidden();
+          else island.reveal();
+          break;
+      }
+    }),
+    onEvent<null>("screen-changed", () => void Bridge.reposition()),
+    // The settings window writes preferences; apply them here without a restart.
+    onEvent<Settings>("settings-changed", (s) => {
+      State.settings = { ...State.settings, ...s };
+      island.applySettings();
+      State.loadIntegrationTasks();
+      applySessionPrefs();
+      void refreshConfigured();
+    }),
+  ]);
 
   registerHookHandlers(island);
   registerIntegrationHandlers(island);

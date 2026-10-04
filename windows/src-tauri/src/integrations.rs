@@ -45,11 +45,13 @@ pub(crate) fn emit(app: &AppHandle, update: IntegrationUpdate) {
     let _ = app.emit_to(WINDOW_LABEL, "integration", update);
 }
 
-fn client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(TIMEOUT)
-        .build()
-        .unwrap_or_default()
+/// One shared client: building one loads the root certificates and TLS config,
+/// and every poll used to build its own. Cloning it is just a reference count.
+pub(crate) fn client() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| reqwest::Client::builder().timeout(TIMEOUT).build().unwrap_or_default())
+        .clone()
 }
 
 /// Set from the tray's Pause item. While it is on, nothing reaches the network:

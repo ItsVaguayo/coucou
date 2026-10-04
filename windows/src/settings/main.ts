@@ -262,6 +262,47 @@ interface IntegrationDef {
   color: string;
   /** Credential Manager keys, in the order they are shown. */
   fields: { key: string; label: string; placeholder: string; secret: boolean }[];
+  /** Anything else the integration needs under its keys. */
+  extra?: () => HTMLElement;
+}
+
+/** Discord: the authorize button and the global mute key. */
+function discordExtra(): HTMLElement {
+  const status = h("span", {
+    class: "hint",
+    text: "Create an app at discord.com/developers → OAuth2: copy the Client ID, reset the secret, add the redirect http://127.0.0.1.",
+  });
+  const connect = h("button", {
+    text: "Connect to Discord",
+    onclick: async () => {
+      status.textContent = "Look at Discord: it asks you to authorize the app.";
+      try {
+        await Bridge.discordConnect();
+      } catch (err) {
+        status.textContent = String(err);
+      }
+    },
+  });
+  const key = h("select", {}) as HTMLSelectElement;
+  for (const [value, text] of [
+    ["Pause", "Pause"], ["ScrollLock", "Scroll Lock"], ["F13", "F13"], ["F14", "F14"], ["", "Off"],
+  ]) {
+    key.append(h("option", { value, text }));
+  }
+  key.value = settings.discordMuteKey ?? "Pause";
+  key.addEventListener("change", () => {
+    settings.discordMuteKey = key.value;
+    void save();
+  });
+  return h("div", { style: "display:flex;flex-direction:column;gap:6px" },
+    h("div", { class: "row" }, h("label", { style: "min-width:104px", text: "Authorize" }), connect),
+    h("div", { class: "row" },
+      h("label", { style: "min-width:104px", text: "Mute key" }),
+      key,
+      h("span", { class: "hint", text: "toggles your mic from anywhere" }),
+    ),
+    status,
+  );
 }
 
 const INTEGRATIONS: IntegrationDef[] = [
@@ -286,6 +327,14 @@ const INTEGRATIONS: IntegrationDef[] = [
   { id: "integration_spotify", name: "Spotify", color: "#1DB954", fields: [] },
   // WhatsApp Web's notifications; they pop up on the island even with this off.
   { id: "integration_whatsapp", name: "WhatsApp", color: "#25D366", fields: [] },
+  // Discord's local RPC: voice controls only work for the app's owner, so the
+  // user registers their own app and pastes it here.
+  { id: "integration_discord", name: "Discord", color: "#5865F2",
+    fields: [
+      { key: "discord-client-id", label: "Client ID", placeholder: "1234567890…", secret: false },
+      { key: "discord-client-secret", label: "Client secret", placeholder: "…", secret: true },
+    ],
+    extra: discordExtra },
 ];
 
 const MAX_ACTIVE = 4;
@@ -345,6 +394,8 @@ function integrationsSection(present: Record<string, boolean>): HTMLElement {
         ),
       );
     }
+
+    if (def.extra) rows.append(def.extra());
 
     list.append(
       h("div", { style: "display:flex;gap:12px;align-items:flex-start" },
@@ -468,6 +519,7 @@ async function main() {
   const keys = [
     "stripe-api-key", "github-token", "vercel-token",
     "n8n-url", "n8n-api-key", "resend-api-key", "notion-api-key", "calcom-api-key",
+    "discord-client-id", "discord-client-secret",
   ];
   const present: Record<string, boolean> = {};
   for (const k of keys) present[k] = (await Bridge.secretPresent(k)) ?? false;

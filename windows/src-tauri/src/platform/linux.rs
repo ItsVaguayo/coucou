@@ -60,6 +60,14 @@ pub fn local_dir() -> PathBuf {
 /// every launch, so each launch would rewrite the system's registry with
 /// plugin paths that vanish once Coucou quits. Give ours its own file.
 pub fn prepare_environment() {
+    // The island is a few small canvases redrawn every frame. WebKitGTK paints
+    // them on the GPU, and each frame's first draw then waited on the compositor
+    // (12-20 ms measured on an NVIDIA laptop): about 16 fps with the CPU busy.
+    // Skia on the CPU drew the same frames in under 1 ms at a steady 60 fps.
+    // Left alone if the user set it either way.
+    if std::env::var_os("WEBKIT_SKIA_ENABLE_CPU_RENDERING").is_none() {
+        std::env::set_var("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1");
+    }
     if std::env::var_os("APPIMAGE").is_none() || std::env::var_os("GST_REGISTRY").is_some() {
         return;
     }

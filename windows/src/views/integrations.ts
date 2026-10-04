@@ -60,14 +60,23 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
   // The Claude Code pill is about hooks, not a key — the macOS wording would be
   // misleading here.
   const missing = task.id === "integration_claude" ? "Hooks not installed" : "Key not configured";
+  const discord = get("integration_discord");
   const label =
-    task.id === "integration_spotify"
+    task.id === "integration_discord"
+      ? error ??
+        (!configured
+          ? "Add your Discord app in Settings"
+          : discord.running !== true
+            ? "Discord is not open"
+            : "Not connected yet · press Connect")
+      : task.id === "integration_spotify"
       ? "Spotify is not open"
       : task.id === "integration_whatsapp"
         ? "No messages yet · keep WhatsApp Web open in Firefox"
         : error ?? (configured ? "Connected · loading…" : missing);
   const statusColor =
-    task.id === "integration_spotify" || task.id === "integration_whatsapp" ? "#6B7079" : error || !configured ? "#F4505E" : "#22C55E";
+    task.id === "integration_spotify" || task.id === "integration_whatsapp" ||
+    (task.id === "integration_discord" && !error && configured) ? "#6B7079" : error || !configured ? "#F4505E" : "#22C55E";
 
   const actions = h("div", { class: "int-actions" });
   if (task.id === "integration_claude") {
@@ -105,6 +114,29 @@ function idleCard(task: AgentTask, openSettings: () => void): HTMLElement {
         style: `color:${task.color}d9`,
         text: "Open WhatsApp Web",
         onclick: () => void Bridge.openWhatsApp(),
+      }),
+    );
+  } else if (task.id === "integration_discord") {
+    if (configured && discord.running === true) {
+      actions.append(
+        h("button", {
+          class: "link-btn",
+          style: `color:${task.color}`,
+          text: "Connect",
+          onclick: () => void Bridge.discordConnect().catch(() => {}),
+        }),
+      );
+    } else if (!configured) {
+      actions.append(
+        h("button", { class: "link-btn", style: "color:#8e939c", text: "Settings…", onclick: openSettings }),
+      );
+    }
+    actions.append(
+      h("button", {
+        class: "link-btn",
+        style: `color:${task.color}d9`,
+        text: "Open Discord",
+        onclick: () => void Bridge.discordControl("open"),
       }),
     );
   } else if (task.id === "integration_spotify") {
@@ -461,6 +493,73 @@ function spotifyCard(): HTMLElement {
   return card;
 }
 
+// ── Discord ───────────────────────────────────────────────────────────────────
+
+interface DiscordMember {
+  id: string;
+  name: string;
+  avatar: string;
+  speaking: boolean;
+  mute: boolean;
+  deaf: boolean;
+}
+
+function discordCard(): HTMLElement {
+  const d = get("integration_discord");
+  const mute = d.mute === true;
+  const deaf = d.deaf === true;
+  const channel = d.channel as { name?: string } | null;
+  const members = arr("integration_discord", "members") as unknown as DiscordMember[];
+
+  const toggle = (on: boolean, iconOn: string, iconOff: string, label: string, action: "mute" | "deaf") =>
+    h(
+      "button",
+      {
+        class: on ? "dc-btn off" : "dc-btn",
+        title: on ? `Un${label.toLowerCase()}` : label,
+        onclick: () => void Bridge.discordControl(action),
+      },
+      svg(on ? iconOff : iconOn, 13),
+      h("span", { text: on ? `${label}d` : label }),
+    );
+
+  const controls = h(
+    "div",
+    { class: "dc-controls" },
+    toggle(mute, ICONS.mic, ICONS.micOff, "Mute", "mute"),
+    toggle(deaf, ICONS.headset, ICONS.headsetOff, "Deafen", "deaf"),
+  );
+  if (channel) {
+    controls.append(
+      h(
+        "button",
+        { class: "dc-btn leave", title: "Leave the call", onclick: () => void Bridge.discordControl("leave") },
+        svg(ICONS.callEnd, 13),
+      ),
+    );
+  }
+
+  const people = h("div", { class: "dc-people" });
+  for (const m of members.slice(0, 9)) {
+    const face = h(
+      "span",
+      { class: m.speaking ? "dc-face speaking" : "dc-face", title: m.name },
+      h("img", { src: m.avatar, alt: "" }),
+    );
+    if (m.deaf || m.mute) face.append(h("i", { class: "dc-flag" }, svg(m.deaf ? ICONS.headsetOff : ICONS.micOff, 7)));
+    people.append(face);
+  }
+  if (members.length > 9) people.append(h("span", { class: "dc-more", text: `+${members.length - 9}` }));
+
+  return h(
+    "div",
+    { class: "int-card" },
+    header("#5865F2", "Discord", channel?.name ? String(channel.name) : "Not in a call"),
+    controls,
+    members.length ? people : h("div", { class: "int-status" }, h("span", { text: "Join a voice channel to see who's talking" })),
+  );
+}
+
 // ── WhatsApp ──────────────────────────────────────────────────────────────────
 
 function whatsappCard(): HTMLElement {
@@ -513,6 +612,8 @@ export function hasIntegrationData(id: string): boolean {
       return get(id).running === true;
     case "integration_whatsapp":
       return arr(id, "messages").length > 0;
+    case "integration_discord":
+      return get(id).running === true && get(id).authorized === true;
     default:
       return false;
   }
@@ -545,6 +646,8 @@ export function renderIntegrationCard(task: AgentTask, hooks: IntegrationCardHoo
       return spotifyCard();
     case "integration_whatsapp":
       return whatsappCard();
+    case "integration_discord":
+      return discordCard();
     default:
       return idleCard(task, hooks.openSettings);
   }

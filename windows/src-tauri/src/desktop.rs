@@ -523,6 +523,19 @@ pub fn open_whatsapp() {
     crate::platform::open_url("https://web.whatsapp.com");
 }
 
+/// Brings Discord forward, or starts it.
+pub fn open_discord() {
+    if let Some((conn, root)) = wm() {
+        let found = conn.client_list(*root).into_iter().find(|&w| conn.class(w).to_lowercase().contains("discord"));
+        if let Some(w) = found {
+            conn.activate(*root, w);
+            return;
+        }
+    }
+    let mut cmd = std::process::Command::new("discord");
+    let _ = crate::platform::no_console(&mut cmd).spawn();
+}
+
 /// `pid` and its parents, nearest first, read from /proc.
 fn ancestors(mut pid: u32) -> Vec<u32> {
     let mut chain = Vec::new();
@@ -602,6 +615,11 @@ fn is_browser(class: &str) -> bool {
 /// sends it as the same `cursor` event the Windows poll sends. Parked, like
 /// that poll, while the island is hidden. Wayland has no global pointer, so
 /// there the page's own mouse events stay the only source.
+/// Pointer within this many physical px of the island: every move is sent.
+const NEAR_PX: i32 = 260;
+/// Farther away, only moves of at least this many px (Manhattan) are sent.
+const FAR_STEP_PX: i32 = 24;
+
 fn spawn_eye_poll(app: AppHandle, gate: Arc<PollGate>) {
     let x11_session = std::env::var("XDG_SESSION_TYPE").map(|v| v == "x11").unwrap_or(false)
         || (std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_some());
@@ -619,8 +637,12 @@ fn spawn_eye_poll(app: AppHandle, gate: Arc<PollGate>) {
         let focus = xcb::Conn::open();
         log::line("eyes follow the pointer across the screen (X11)");
         let mut last = (i32::MIN, i32::MIN);
+        // Far off-screen, so the first move always goes out (and the distance
+        // below can't overflow, which panicked this thread in debug builds).
+        let mut sent = (-100_000, -100_000);
         loop {
             gate.wait_until_active();
+            let mut geo: Option<(i32, i32, i32, i32, f64)> = None;
             // Re-announced on every wake: the island may have missed changes.
             let mut last_browser: Option<bool> = None;
             let mut ticks: u32 = 0;
@@ -648,13 +670,27 @@ fn spawn_eye_poll(app: AppHandle, gate: Arc<PollGate>) {
                 if ok == 0 || (rx, ry) == last {
                     continue;
                 }
+                // Window position, size and scale are main-thread round trips:
+                // read them twice a second, not on every pointer move.
+                if geo.is_none() || ticks % 15 == 0 {
+                    geo = island::window(&app).and_then(|win| {
+                        let origin = win.outer_position().ok()?;
+                        let size = win.outer_size().ok()?;
+                        Some((origin.x, origin.y, size.width as i32, size.height as i32, win.scale_factor().unwrap_or(1.0)))
+                    });
+                }
+                let Some((ox, oy, ow, oh, scale)) = geo else { continue };
+                // Near the island every move counts (hover, eyes up close). Far
+                // away the eyes barely turn, so only a real jump wakes the page.
+                let near = rx > ox - NEAR_PX && rx < ox + ow + NEAR_PX && ry < oy + oh + NEAR_PX;
+                if !near && (rx - sent.0).abs() + (ry - sent.1).abs() < FAR_STEP_PX {
+                    continue;
+                }
                 last = (rx, ry);
-                let Some(win) = island::window(&app) else { continue };
-                let Ok(origin) = win.outer_position() else { continue };
-                let scale = win.scale_factor().unwrap_or(1.0);
-                let x = (rx as f64 - origin.x as f64) / scale;
-                let y = (ry as f64 - origin.y as f64) / scale;
-                let _ = win.emit("cursor", CursorPayload { x, y });
+                sent = (rx, ry);
+                let x = (rx as f64 - ox as f64) / scale;
+                let y = (ry as f64 - oy as f64) / scale;
+                let _ = app.emit_to(island::WINDOW_LABEL, "cursor", CursorPayload { x, y });
             }
         }
     });

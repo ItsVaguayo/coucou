@@ -137,12 +137,13 @@ export const INTEGRATION_AGENTS: AgentTask[] = [
   task("integration_stripe", "Stripe", "#0570DE", "n8n"),
   task("integration_spotify", "Spotify", "#1DB954", "n8n"),
   task("integration_whatsapp", "WhatsApp", "#25D366", "n8n"),
+  task("integration_discord", "Discord", "#5865F2", "n8n"),
 ];
 
 export const TOGGLEABLE_INTEGRATION_IDS = [
   "integration_resend", "integration_n8n", "integration_vercel", "integration_github",
   "integration_notion", "integration_calcom", "integration_stripe", "integration_spotify",
-  "integration_whatsapp",
+  "integration_whatsapp", "integration_discord",
 ];
 
 /** What an integration poller last reported. */
@@ -172,6 +173,10 @@ export interface Settings {
   islandOffset: number;
   /** Island size relative to the default (0.75–1.4). */
   islandScale: number;
+  /** What each session's Mochi wears (an Accessory id), keyed by session id. */
+  mochiAccessories: Record<string, string>;
+  /** Global key that toggles Discord's mute ("Pause", "ScrollLock", "F13", "F14", "" = off). */
+  discordMuteKey: string;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -190,6 +195,8 @@ export const DEFAULT_SETTINGS: Settings = {
   sessionNames: {},
   islandOffset: 0,
   islandScale: 1,
+  mochiAccessories: {},
+  discordMuteKey: "Pause",
 };
 
 type Listener = () => void;

@@ -147,7 +147,6 @@ body {
   position: absolute;
   pointer-events: none;
   border-radius: 50%;
-  filter: blur(6px);
   transition: opacity 0.4s ease-in-out, background 0.4s ease-in-out;
 }
 
@@ -1471,6 +1470,164 @@ input[type="range"]::-webkit-slider-thumb {
   color: #fff;
 }
 
+/* ── Discord card ────────────────────────────────────────────────────────── */
+
+.dc-controls {
+  display: flex;
+  gap: 6px;
+  padding-top: 8px;
+}
+
+.dc-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 12px;
+  background: #5865f22e;
+  color: #dfe1ff;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dc-btn:hover {
+  background: #5865f255;
+}
+
+.dc-btn.off {
+  background: #f4505e33;
+  color: #ffb3b9;
+}
+
+.dc-btn.leave {
+  margin-left: auto;
+  padding: 0 8px;
+  background: #f4505e33;
+  color: #ff8a93;
+}
+
+.dc-people {
+  display: flex;
+  gap: 4px;
+  padding-top: 8px;
+  align-items: center;
+}
+
+.dc-face {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px transparent;
+  transition: box-shadow 0.12s;
+}
+
+.dc-face img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: block;
+}
+
+.dc-face.speaking {
+  box-shadow: 0 0 0 2px #23a55a;
+}
+
+.dc-flag {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #1c1d21;
+  color: #f4505e;
+}
+
+.dc-more {
+  font-size: 10px;
+  color: #8e939c;
+}
+
+/* ── Discord call on the compact island ──────────────────────────────────── */
+
+#voice-call {
+  position: absolute;
+  left: 58px;
+  right: 10px;
+  top: 0;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #8f97ff;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease-in-out;
+}
+
+.vc-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 90px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  color: #c9cbd6;
+}
+
+.vc-faces {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vc-face {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px transparent;
+  transition: box-shadow 0.12s;
+}
+
+.vc-face img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  display: block;
+}
+
+.vc-face.speaking {
+  box-shadow: 0 0 0 2px #23a55a;
+}
+
+.vc-face i {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  display: grid;
+  place-items: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #000;
+  color: #f4505e;
+}
+
+.vc-more {
+  font-size: 10px;
+  color: #8e939c;
+}
+
 /* ── Now playing on the compact island ───────────────────────────────────── */
 
 #now-playing {
@@ -2034,6 +2191,36 @@ input[type="range"]::-webkit-slider-thumb {
 
 .cp-swatch.on {
   box-shadow: 0 0 0 2px #141518, 0 0 0 3.5px rgba(255, 255, 255, 0.85);
+}
+
+.cp-accs {
+  display: flex;
+  gap: 2px;
+}
+
+.cp-acc {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.cp-acc:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.cp-acc.on {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.cp-acc-canvas {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 
 .cp-foot {

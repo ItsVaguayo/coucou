@@ -10,6 +10,8 @@ import { PROJECT_PALETTE, setSessionHeight } from "../core/layout";
 import { State, contextShare, type AgentTask, type ToolRun } from "../core/state";
 import { CONTEXT_WARN, refreshTail } from "../island/hooks";
 import type { ViewActions, ViewHost } from "./views";
+import { ACCESSORIES, BotEngine, hexToRGB, type Accessory } from "../mochi/engine";
+import { accessoryOf } from "../mochi/minibots";
 
 /** Seconds between two reads of the transcript while the view is open. */
 const TRANSCRIPT_EVERY_MS = 3000;
@@ -80,6 +82,48 @@ function runRow(run: ToolRun, now: number, live: boolean): HTMLElement {
 }
 
 // ── Colour picker (shared with the overview pills) ────────────────────────────
+
+/** A still Mochi in the session's colour wearing `acc`, drawn once. */
+function accessoryThumb(color: string, acc: Accessory): HTMLCanvasElement {
+  const css = 22;
+  const dpr = Math.max(2, Math.min(3, window.devicePixelRatio || 1));
+  const c = h("canvas", { class: "cp-acc-canvas" }) as HTMLCanvasElement;
+  c.width = Math.round(css * dpr);
+  c.height = Math.round(css * dpr);
+  const e = new BotEngine();
+  e.isMini = true;
+  e.bodyColor = hexToRGB(color);
+  e.accessory = acc;
+  const x = c.getContext("2d");
+  if (x) {
+    // Drawn a bit larger than the button and lowered, so a hat fits above her.
+    x.scale(dpr, dpr);
+    x.translate(-3, -1);
+    e.draw(x, css + 6, css + 6);
+  }
+  return c;
+}
+
+/** One small Mochi per accessory; the one she wears is ringed. */
+function accessoryRow(task: AgentTask, actions: ViewActions): HTMLElement | null {
+  if (!task.sessionId) return null;
+  const worn = accessoryOf(task);
+  return h(
+    "div",
+    { class: "cp-accs" },
+    ...ACCESSORIES.map((acc) =>
+      h(
+        "button",
+        {
+          class: acc === worn ? "cp-acc on" : "cp-acc",
+          title: acc === "none" ? "Nothing" : acc,
+          onclick: () => actions.setSessionAccessory(task.sessionId!, acc === "none" ? null : acc),
+        },
+        accessoryThumb(task.color, acc),
+      ),
+    ),
+  );
+}
 
 /** Eight swatches, a free colour and Reset, for the project a session runs in. */
 export function buildColorPicker(
@@ -156,6 +200,7 @@ export function buildColorPicker(
       h("button", { class: "icon-btn", title: "Close", onclick: onDone }, svg(ICONS.xmark, 8)),
     ),
     h("div", { class: "cp-swatches" }, ...swatches),
+    accessoryRow(task, actions),
     h(
       "div",
       { class: "cp-foot" },

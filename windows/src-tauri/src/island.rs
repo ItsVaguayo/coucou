@@ -222,9 +222,9 @@ pub fn spawn_cursor_poll(app: AppHandle, gate: Arc<PollGate>) {
         // moment the island comes back.
         let mut last_screen: Option<(i32, i32, u32, u32, u64)> = None;
         // Without a cursor to read (Linux) the loop only watches the display
-        // layout, and twice a second is plenty for that: waking at 60 Hz just to
-        // find no cursor costs CPU for nothing.
-        let (period, screen_every) = if platform::CURSOR_POLL { (16, 30) } else { (500, 1) };
+        // layout. Each look is several main-thread round trips, and a monitor
+        // plugged in can wait two seconds to be noticed.
+        let (period, screen_every) = if platform::CURSOR_POLL { (16, 30) } else { (2000, 1) };
         loop {
             gate.wait_until_active();
             let mut last = (f64::MIN, f64::MIN);

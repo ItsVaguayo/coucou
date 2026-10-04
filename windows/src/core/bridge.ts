@@ -131,6 +131,11 @@ export const Bridge = {
   /** Spotify card buttons. */
   mediaControl: (action: "toggle" | "next" | "previous") => call<void>("media_control", { action }),
 
+  /** Discord card and toast: mute / deafen toggles, leave the call, bring Discord forward. */
+  discordControl: (action: "mute" | "deaf" | "leave" | "open") => call<boolean>("discord_control", { action }),
+  /** Settings → Connect: Discord shows its own authorize prompt. */
+  discordConnect: () => callOrThrow<void>("discord_connect"),
+
   /** Tray → Pause. Stops the integration pollers, not just the island. */
   setPaused: (paused: boolean) => call<void>("set_paused", { paused }),
 };

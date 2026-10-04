@@ -16,6 +16,7 @@ const KEY_FOR: Record<string, string> = {
   integration_resend: "resend-api-key",
   integration_notion: "notion-api-key",
   integration_calcom: "calcom-api-key",
+  integration_discord: "discord-client-id",
 };
 
 const clearTimers = new Map<string, number>();
@@ -27,11 +28,13 @@ export function registerIntegrationHandlers(island: Island) {
 
 /** Asks Rust which keys exist so the idle cards can say so. */
 export async function refreshConfigured() {
-  for (const [id, key] of Object.entries(KEY_FOR)) {
-    const present = (await Bridge.secretPresent(key)) ?? false;
+  // Asked all at once: one after the other they were seven keyring round trips.
+  const entries = Object.entries(KEY_FOR);
+  const present = await Promise.all(entries.map(([, key]) => Bridge.secretPresent(key)));
+  entries.forEach(([id], i) => {
     const info = State.integrations[id] ?? { data: {}, error: null, loaded: false, configured: false };
-    State.integrations[id] = { ...info, configured: present };
-  }
+    State.integrations[id] = { ...info, configured: present[i] ?? false };
+  });
   const hooks = State.settings.hooksInstalled;
   const claude = State.integrations.integration_claude ?? {
     data: {}, error: null, loaded: false, configured: false,
@@ -56,6 +59,18 @@ function handle(island: Island, update: IntegrationUpdate) {
     update.id === "integration_spotify" &&
     update.data.playing === true &&
     previous?.data?.playing !== true &&
+    State.settings.activeIntegrations.includes(update.id)
+  ) {
+    State.touch(update.id);
+    island.reveal();
+  }
+
+  // Joining a voice channel wakes the island too, and keeps Discord in front.
+  const channel = (d: Record<string, unknown> | undefined) => (d?.channel as { id?: string } | null)?.id ?? null;
+  if (
+    update.id === "integration_discord" &&
+    channel(update.data) &&
+    channel(update.data) !== channel(previous?.data) &&
     State.settings.activeIntegrations.includes(update.id)
   ) {
     State.touch(update.id);

@@ -1,9 +1,9 @@
 // Mini Mochis (pills + compact grid) — port of MiniBotCanvasView.
 // Each canvas owns a BotEngine; the island's frame loop ticks every live one.
 
-import { BotEngine, hexToRGB, moodsFor, randomMood, type MiniReaction } from "./engine";
+import { BotEngine, asAccessory, hexToRGB, moodsFor, randomMood, type Accessory, type MiniReaction } from "./engine";
 import type { BotStateName } from "../core/layout";
-import type { AgentTask } from "../core/state";
+import { State, type AgentTask } from "../core/state";
 
 interface MiniBot {
   canvas: HTMLCanvasElement;
@@ -53,6 +53,10 @@ function dozing(t: AgentTask): boolean {
 
 const shownState = (t: AgentTask): BotStateName => (dozing(t) ? "sleeping" : t.state);
 
+/** What this session's Mochi wears, picked in her pill's menu; integrations stay bare. */
+export const accessoryOf = (t: AgentTask): Accessory =>
+  isSession(t) ? asAccessory(State.settings.mochiAccessories?.[t.sessionId!]) : "none";
+
 export const REACTION: Partial<Record<BotStateName, MiniReaction>> = {
   finished: "done",
   approval: "ask",
@@ -86,6 +90,8 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
   const engine = new BotEngine();
   engine.isMini = true;
   engine.bodyColor = hexToRGB(task.color);
+  engine.accessory = accessoryOf(task);
+  engine.wumpus = task.id === "integration_discord";
   engine.setState(shownState(task), true);
   if (task.emote) engine.setPermanentEmote(task.emote);
   if (task.miniEye) {
@@ -141,6 +147,7 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
     if (!task) continue;
     if (!task.leaving) mb.engine.setState(shownState(task));
     mb.engine.bodyColor = hexToRGB(task.color);
+    mb.engine.accessory = accessoryOf(task);
     const reaction = changed.get(task.id);
     if (reaction) mb.engine.miniReact(reaction);
   }
@@ -175,6 +182,12 @@ export function miniBotsReacting(): boolean {
   return false;
 }
 
+function onScreen(canvas: HTMLCanvasElement): boolean {
+  if (!canvas.isConnected || canvas.closest(".view:not(.on)")) return false;
+  const grid = canvas.closest<HTMLElement>("#mini-grid");
+  return !grid || grid.style.opacity !== "0";
+}
+
 export function tickMiniBots(dt: number) {
   // Dozing depends on the clock, not on an event: look again now and then.
   const ms = Date.now();
@@ -186,6 +199,9 @@ export function tickMiniBots(dt: number) {
     }
   }
   for (const mb of live.values()) {
+    // Hidden views stay in the page at opacity 0, and so does the compact grid:
+    // painting their Mochis cost as much as the visible ones, for nothing.
+    if (!onScreen(mb.canvas)) continue;
     // Whether it sits in the scaled grid is only known once it is in the page.
     const dpr = miniDpr(mb.canvas);
     if (dpr !== mb.dpr) {

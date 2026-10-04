@@ -15,3 +15,13 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# `npm run tauri dev` is how Coucou runs day to day, so the debug build has to be
+# usable: dependencies (serde_json, tokio, reqwest/rustls, the keyring crypto,
+# wry) optimised, our own crate left quick to rebuild. Line tables only keep
+# backtraces readable without a 300 MB binary.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 2
