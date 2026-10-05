@@ -108,6 +108,19 @@ export function setSessionHeight(h: number): boolean {
   return true;
 }
 
+/** Approval card height: 160, or taller to fit an AskUserQuestion's options. */
+export const APPROVAL_MIN_H = 160;
+export const APPROVAL_MAX_H = 300;
+let approvalHeight = APPROVAL_MIN_H;
+
+/** Returns true when the height actually changed. */
+export function setApprovalHeight(h: number): boolean {
+  const next = Math.round(Math.min(APPROVAL_MAX_H, Math.max(APPROVAL_MIN_H, h)));
+  if (Math.abs(next - approvalHeight) < 2) return false;
+  approvalHeight = next;
+  return true;
+}
+
 /** Chat view grows with the conversation — IslandContainer.chatPromptHeight. */
 export function chatPromptHeight(messageCount: number): number {
   return Math.min(300, 240 + messageCount * 40);
@@ -129,6 +142,7 @@ export function islandSize(
       const h =
         view === "prompt" ? chatPromptHeight(chatCount)
           : view === "session" ? sessionHeight
+            : view === "approval" ? approvalHeight
             : VIEW_LAYOUTS[view].height;
       return { w: EXPANDED_W, h };
     }

@@ -98,6 +98,7 @@ body {
   pointer-events: none;
 }
 
+
 /* The drop sequence. Sits under the header and takes over the island body; it
    cross-fades in and out, so the last frame stays up while the views return. */
 #upload-layer {
@@ -164,15 +165,49 @@ body {
 /* Compact 2×2 mini grid, to the right of the notch. */
 #mini-grid {
   position: absolute;
-  width: 29px;
-  height: 29px;
-  display: grid;
-  grid-template-columns: 13px 13px;
-  grid-auto-rows: 13px;
+  height: 13px;
+  display: flex;
   gap: 3px;
   pointer-events: none;
   transition: opacity 0.25s ease-in-out;
 }
+
+/* Compact island: who is in focus and what it is doing. Static text on purpose:
+   anything that animates here gets repainted with Mochi every frame. */
+#compact-status {
+  position: absolute;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  font: 500 11.5px var(--font);
+  color: var(--dim);
+  pointer-events: none;
+  transition: opacity 0.25s ease-in-out;
+}
+
+#compact-status .cs-name {
+  flex: 0 0 auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+#compact-status .cs-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#compact-status.tone-busy .cs-text { color: #c9ccd2; }
+#compact-status.tone-ask .cs-text { color: var(--amber); }
+#compact-status.tone-done .cs-text { color: var(--green); }
+#compact-status.tone-error .cs-text { color: var(--red-text); }
 
 /* A mini Mochi: the slot is the body, the canvas is larger and overflows it so
    hands, badges and particles are not cut off. */
@@ -632,6 +667,128 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   user-select: text;
+}
+
+/* AskUserQuestion on the approval card: every option, picked right there. */
+.qa-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 0 1 auto;
+}
+
+.qa-head {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin-bottom: 4px;
+}
+
+.qa-chip {
+  flex: 0 0 auto;
+  font: 600 10.5px var(--font);
+  color: var(--amber);
+  background: rgba(245, 165, 36, 0.12);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.qa-q {
+  font: 600 13px var(--font);
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qa-multi {
+  flex: 0 0 auto;
+  font: 400 11px var(--font);
+  color: var(--dim);
+}
+
+.qa-opts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.qa-opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+  padding: 5px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--ink-2);
+  text-align: left;
+  cursor: default;
+  transition: transform 0.08s ease-out, background 0.12s ease-out, border-color 0.12s ease-out;
+}
+
+.qa-opt:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.qa-opt:active {
+  transform: scale(0.97);
+}
+
+.qa-opt.on {
+  background: rgba(245, 165, 36, 0.16);
+  border-color: rgba(245, 165, 36, 0.7);
+}
+
+.qa-label {
+  font: 500 12px var(--font);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qa-desc {
+  font: 400 10.5px var(--font);
+  color: var(--dim);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Approval card: where it runs, and a red flag for destructive commands. */
+.who-cwd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--dim-3);
+}
+
+.danger-chip {
+  flex: 0 0 auto;
+  font: 600 10.5px var(--font);
+  color: var(--red-text);
+  background: rgba(244, 80, 94, 0.14);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+.code.danger {
+  color: var(--red-text);
+  background: rgba(244, 80, 94, 0.1);
+  border-color: rgba(244, 80, 94, 0.45);
+}
+
+.btn[disabled] {
+  opacity: 0.4;
+  pointer-events: none;
 }
 
 .stack {
@@ -1380,37 +1537,48 @@ input[type="range"]::-webkit-slider-thumb {
 .sp-track {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-top: 7px;
+  gap: 10px;
+  padding-top: 4px;
   min-width: 0;
 }
 
+.int-card.sp {
+  padding-top: 8px;
+  background: radial-gradient(240px 150px at 0% 100%, var(--sp-wash, #1db95433), transparent 75%);
+}
+
 .sp-art {
-  width: 32px;
-  height: 32px;
+  width: 42px;
+  height: 42px;
   flex: 0 0 auto;
-  border-radius: 5px;
+  border-radius: 8px;
   background: #1db95424;
   object-fit: cover;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+}
+
+.int-card.sp.paused .sp-art {
+  filter: grayscale(0.5) brightness(0.75);
 }
 
 .sp-text {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .sp-title {
-  font: 600 11px var(--font);
-  color: #c5c8cd;
+  font: 600 12px/1.25 var(--font);
+  color: #eceef1;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .sp-artist {
-  font: 400 10px var(--font);
-  color: var(--dim-3);
+  font: 400 10.5px/1.25 var(--font);
+  color: var(--dim);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1420,8 +1588,7 @@ input[type="range"]::-webkit-slider-thumb {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding-top: 7px;
-  padding-right: 4px;
+  padding-top: 4px;
 }
 
 .sp-time {
@@ -1442,32 +1609,51 @@ input[type="range"]::-webkit-slider-thumb {
 .sp-fill {
   display: block;
   height: 100%;
-  background: #1db954;
+  background: var(--sp-color, #1db954);
   border-radius: 2px;
 }
 
 .sp-controls {
   display: flex;
   justify-content: center;
-  gap: 14px;
-  padding-top: 4px;
+  align-items: center;
+  gap: 18px;
+  padding-top: 2px;
 }
 
 .sp-btn {
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border: 0;
   border-radius: 50%;
   background: transparent;
   color: #c5c8cd;
   cursor: pointer;
+  transition: transform 0.08s ease-out, background 0.12s ease-out;
 }
 
 .sp-btn:hover {
-  background: #1db95433;
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
+}
+
+.sp-btn:active {
+  transform: scale(0.9);
+}
+
+.sp-btn.sp-play {
+  width: 26px;
+  height: 26px;
+  background: var(--sp-color, #1db954);
+  color: #0b0c0e;
+}
+
+.sp-btn.sp-play:hover {
+  background: var(--sp-color, #1db954);
+  color: #0b0c0e;
+  filter: brightness(1.12);
 }
 
 /* ── Discord card ────────────────────────────────────────────────────────── */
@@ -1684,7 +1870,7 @@ input[type="range"]::-webkit-slider-thumb {
 }
 
 .np-title.scroll {
-  animation: np-scroll var(--np-dur, 8s) ease-in-out infinite alternate;
+  animation: np-scroll var(--np-dur, 8s) ease-in-out 2 alternate;
 }
 
 @keyframes np-scroll {
@@ -1715,7 +1901,7 @@ input[type="range"]::-webkit-slider-thumb {
   width: 3px;
   height: 100%;
   border-radius: 2px;
-  background: linear-gradient(180deg, #5ef08f, #1db954);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.4), rgba(255, 255, 255, 0)), var(--np-color, #1db954);
   transform-origin: center;
   animation: np-eq 0.9s ease-in-out infinite alternate;
 }
@@ -1730,6 +1916,35 @@ input[type="range"]::-webkit-slider-thumb {
   35% { transform: scaleY(0.9); }
   60% { transform: scaleY(0.45); }
   100% { transform: scaleY(1); }
+}
+
+/* Not on screen: nothing animates. An invisible equaliser still cost a repaint
+   every frame, and joined with Mochi's it spanned the whole island. */
+#now-playing:not(.on) * {
+  animation-play-state: paused;
+}
+
+.np-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.np-progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 1px;
+  background: var(--np-color, #1db954);
+}
+
+#now-playing.paused .np-progress i {
+  opacity: 0.45;
 }
 
 #now-playing.paused .np-eq i {

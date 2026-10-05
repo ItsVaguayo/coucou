@@ -10,15 +10,15 @@ import {
   EXPANDED_CORNER, EXPANDED_W, NOTCH_W, PANEL_H, PANEL_W,
   ROUNDED_CORNER, VIEW_LAYOUTS, botGlowColor, botGlowOpacity, botPosition, chatPromptHeight,
   islandSize,
-  type IslandMode, type IslandViewName,
+  type BotStateName, type IslandMode, type IslandViewName,
 } from "../core/layout";
 import { Sound } from "../core/sound";
-import { State } from "../core/state";
+import { State, needsYou, type AgentTask } from "../core/state";
 import { BotEngine, hexToRGB, randomMood } from "../mochi/engine";
 import { Greeting } from "../mochi/greeting";
 import {
   accessoryOf,
-  REACTION, createMiniBot, miniBotsReacting, moodRandomMini, pruneMiniBots, setMiniGridScale,
+  REACTION, agentMarkOf, createMiniBot, miniBotsNeedAttention, miniBotsReacting, moodRandomMini, pruneMiniBots, setMiniGridScale,
   syncMiniBotStates, tickMiniBots,
 } from "../mochi/minibots";
 import { UploadCanvas } from "../upload/canvas";
@@ -29,6 +29,44 @@ import { IslandStateMachine } from "./fsm";
 import { applySessionPrefs } from "./hooks";
 
 const BOT_OVERHANG = 40;
+
+/** Compact island: mini Mochi body size, gap between them, side margin, status start. */
+const MINI_PX = 13;
+const MINI_GAP = 3;
+const COMPACT_SIDE = 30;
+const STATUS_LEFT = 58;
+
+type StatusTone = "quiet" | "busy" | "ask" | "done" | "error";
+
+/** A session in one of these takes the compact strip from a call or a song. */
+const SESSION_AT_WORK: ReadonlySet<BotStateName> = new Set(["working", "thinking", "searching", "approval", "question"]);
+
+/** The compact island's line for the focused pill: who, and what it is doing. */
+function compactStatusOf(task: AgentTask | null, state: BotStateName): { name: string; text: string; tone: StatusTone } {
+  if (!task) return { name: "", text: "", tone: "quiet" };
+  const step = task.steps.at(-1) ?? "";
+  // The first Claude Code session rides the integration_claude pill: it still has a name.
+  const name = task.sessionId || !task.isIntegration ? task.name : "";
+  switch (state) {
+    case "approval":
+      return { name, text: "needs your permission", tone: "ask" };
+    case "question":
+      return { name, text: "is asking you", tone: "ask" };
+    case "error":
+      return { name, text: "stopped on an error", tone: "error" };
+    case "finished":
+      return { name, text: "done", tone: "done" };
+    case "ratelimit":
+      return { name, text: "rate limited", tone: "error" };
+    case "thinking":
+      return { name, text: "thinking…", tone: "busy" };
+    case "working":
+    case "searching":
+      return { name, text: step || "working…", tone: "busy" };
+    default:
+      return { name, text: task.isIntegration ? step || task.name : "idle", tone: "quiet" };
+  }
+}
 /** Same margin as the Rust hit test (src-tauri/src/island.rs). */
 const HIT_MARGIN = 14;
 
@@ -85,6 +123,10 @@ export class Island {
   private botGlow!: HTMLElement;
   private greetingCanvas!: HTMLCanvasElement;
   private miniGrid!: HTMLElement;
+  /** Compact island: what the focused session is doing, between Mochi and the minis. */
+  private compactStatus!: HTMLElement;
+  private compactStatusKey = "";
+  private miniCount = 0;
   private nowPlaying = createNowPlaying();
   private voiceStrip = createVoiceStrip();
   private compactLayout = "";
@@ -211,12 +253,25 @@ export class Island {
         if (!req) return;
         Sound.play(d === "deny" ? "blip" : "approve");
         void Bridge.approvalDecision(req.requestId, d);
-        State.pendingApproval = null;
-        State.isPinned = false;
-        this.fsm.pinned = State.userPinned;
-        State.updateTask(req.taskId, "working");
-        State.setPillBadge(req.taskId, null);
-        this.setView(State.defaultView());
+        this.closeApproval(req.taskId);
+      },
+      answer: (answers) => {
+        const req = State.pendingApproval;
+        void Bridge.log(`answer req=${req?.requestId ?? "none"} ${JSON.stringify(answers)}`);
+        if (!req) return;
+        Sound.play("approve");
+        void Bridge.approvalAnswer(req.requestId, answers);
+        this.closeApproval(req.taskId);
+      },
+      answerInTerminal: () => {
+        const req = State.pendingApproval;
+        void Bridge.log(`to terminal req=${req?.requestId ?? "none"}`);
+        if (!req) return;
+        Sound.play("blip");
+        void Bridge.approvalDecline(req.requestId);
+        // Claude Code now asks in the terminal: the session is waiting, not working.
+        this.closeApproval(req.taskId, "question");
+        void this.focusSession(req.taskId);
       },
       toggleSound: () => {
         State.settings.soundEnabled = !State.settings.soundEnabled;
@@ -284,6 +339,7 @@ export class Island {
     this.botCanvas = h("canvas", { id: "bot-canvas" });
     this.greetingCanvas = h("canvas", { id: "greeting-canvas" });
     this.miniGrid = h("div", { id: "mini-grid" });
+    this.compactStatus = h("div", { id: "compact-status" });
     this.countdown = h("div", { id: "countdown" });
 
     this.header = buildHeader(actions);
@@ -318,6 +374,7 @@ export class Island {
       this.botGlow,
       this.botCanvas,
       this.miniGrid,
+      this.compactStatus,
       this.nowPlaying.el,
       this.voiceStrip.el,
       this.toasts.el,
@@ -548,6 +605,16 @@ export class Island {
     return !!ok;
   }
 
+  /** The approval card is answered (or handed to the terminal): take it down. */
+  private closeApproval(taskId: string, next: "working" | "question" = "working") {
+    State.pendingApproval = null;
+    State.isPinned = false;
+    this.fsm.pinned = State.userPinned;
+    State.updateTask(taskId, next);
+    State.setPillBadge(taskId, null);
+    this.setView(State.defaultView());
+  }
+
   /** An alert stopped waiting for an answer: let the island auto-close again. */
   dropPin() {
     this.fsm.pinned = State.userPinned;
@@ -684,14 +751,33 @@ export class Island {
   private targetSize(): { w: number; h: number; r: number } {
     const size = islandSize(State.mode, State.view, State.chatHistory.length);
     const h = size.h;
+    const strip = this.compactStrip();
     const w =
       State.mode !== "compact" ? size.w
-        : this.toasts.active ? TOAST_W
-          : discordInCall() ? VOICE_W
-          : spotifyShown() ? NOW_PLAYING_W
+        : strip === "toast" ? TOAST_W
+          : strip === "call" ? VOICE_W
+          : strip === "player" ? NOW_PLAYING_W
             : size.w;
     const r = State.mode === "expanded" ? EXPANDED_CORNER : ROUNDED_CORNER;
     return { w, h, r };
+  }
+
+  /**
+   * What the compact island shows. A notice first; then the session line when a
+   * session waits on you, or when the one in focus is at work — the call and the
+   * song only take the strip when nothing more pressing is going on, or when you
+   * picked Discord or Spotify yourself. Mochi still wears the Discord headphones
+   * and the mute plaster, so the call stays visible.
+   */
+  private compactStrip(): "toast" | "call" | "player" | "status" {
+    if (this.toasts.active) return "toast";
+    const focus = State.focusTask;
+    const mediaFocus = focus?.id === "integration_discord" || focus?.id === "integration_spotify";
+    const focusAtWork = focus?.source === "claudeCode" && SESSION_AT_WORK.has(focus.state);
+    const statusFirst = State.tasks.some(needsYou) || (!mediaFocus && focusAtWork);
+    if (!statusFirst && discordInCall()) return "call";
+    if (!statusFirst && spotifyShown()) return "player";
+    return "status";
   }
 
   private targetZoom(): number {
@@ -722,8 +808,14 @@ export class Island {
     // Called every frame; once the island has settled there is nothing to
     // write, and each style write made WebKit lay the island out again.
     const geoKey = `${w}|${hh}|${r}|${this.zoom.value}|${this.targetZoom()}|${window.devicePixelRatio}`;
-    if (geoKey === this.geoKey) return;
-    this.geoKey = geoKey;
+    if (geoKey !== this.geoKey) {
+      this.geoKey = geoKey;
+      this.writeGeometry(w, hh, r);
+    }
+    this.pushIslandRect();
+  }
+
+  private writeGeometry(w: number, hh: number, r: number) {
     this.islandEl.style.width = `${w}px`;
     this.islandEl.style.height = `${hh}px`;
     this.islandEl.style.borderRadius = `0 0 ${r}px ${r}px`;
@@ -734,11 +826,19 @@ export class Island {
     // These follow the island as it resizes, so they belong here rather than in
     // the state-driven DOM sync.
     // Snapped to whole screen pixels like the big Mochi (see drawBot).
-    this.miniGrid.style.left = `${this.snapX(w - 40 - 14.5)}px`;
-    this.miniGrid.style.top = `${this.snapY(hh / 2 - 14.5)}px`;
+    this.placeCompactRow(w, hh);
     this.greetingCanvas.style.left = `${(w - EXPANDED_W) / 2}px`;
     this.uploadCanvas.el.style.left = `${(w - EXPANDED_W) / 2}px`;
+  }
 
+  /**
+   * Sends the island's rect to Rust, which makes it the X11 input region. Runs
+   * every frame, outside the geometry key: when the frame that ends a resize
+   * fell inside the 50 ms throttle, the next one had the same key, returned
+   * early, and the region stayed half-grown, so clicks on the buttons at the
+   * bottom of a card went through to the window underneath.
+   */
+  private pushIslandRect() {
     const rect = this.islandRect();
     const p = this.pushedRect;
     const moving = this.width.animating || this.height.animating || this.zoom.animating;
@@ -751,6 +851,21 @@ export class Island {
       this.pushedAt = now;
       void Bridge.setIslandRect(rect.x, rect.y, rect.w, rect.h);
     }
+  }
+
+  /**
+   * The minis sit in a row at the right, as far from the edge as Mochi is from
+   * the left; the status line fills the room between them.
+   */
+  private placeCompactRow(w: number, hh: number) {
+    const n = this.miniCount;
+    const rowW = n > 0 ? n * MINI_PX + (n - 1) * MINI_GAP : 0;
+    const rowLeft = w - COMPACT_SIDE - rowW;
+    this.miniGrid.style.left = `${this.snapX(rowLeft)}px`;
+    this.miniGrid.style.top = `${this.snapY(hh / 2 - MINI_PX / 2)}px`;
+    this.compactStatus.style.left = `${STATUS_LEFT}px`;
+    this.compactStatus.style.width = `${Math.max(0, (n > 0 ? rowLeft - 10 : w - COMPACT_SIDE) - STATUS_LEFT)}px`;
+    this.compactStatus.style.height = `${hh}px`;
   }
 
   /** Island rect in window coordinates (origin top-left of the 720×320 window). */
@@ -1060,6 +1175,8 @@ export class Island {
       : settling ||
         !this.botCx.settled || !this.botCy.settled || !this.botSize.settled ||
         greetingActive || this.engine.busy || UploadSeq.isActive || miniBotsReacting() ||
+        // A mini waiting on you keeps its ring pulsing, at the ambient rate.
+        miniBotsNeedAttention() ||
         // A frame skipped by the ambient cap still owes its draw: stopping here
         // left the eyes where they were until the next cursor event.
         !drawNow;
@@ -1133,6 +1250,8 @@ export class Island {
     const focus = State.focusTask;
     this.engine.bodyColor = focus?.isIntegration ? hexToRGB(focus.color) : null;
     this.engine.wumpus = focus?.id === "integration_discord";
+    this.engine.agentMark = agentMarkOf(focus);
+    if (focus) this.engine.agentMarkColor = focus.color;
     this.engine.particleOverhang = BOT_OVERHANG;
     this.engine.lookX = this.lookX();
     this.engine.lookY = this.lookY();
@@ -1237,10 +1356,10 @@ export class Island {
 
     // Compact mini grid — or, while a song is loaded, the player in its place.
     const compact = State.mode === "compact";
-    const toastOn = compact && this.toasts.active;
-    // A Discord call takes the strip before the song does.
-    const callOn = compact && !toastOn && discordInCall();
-    const playerOn = compact && !toastOn && !callOn && spotifyShown();
+    const strip = this.compactStrip();
+    const toastOn = compact && strip === "toast";
+    const callOn = compact && strip === "call";
+    const playerOn = compact && strip === "player";
     const layoutKey = `${toastOn}|${playerOn}|${callOn}`;
     if (layoutKey !== this.compactLayout) {
       this.compactLayout = layoutKey;
@@ -1248,21 +1367,29 @@ export class Island {
     }
     const showGrid = compact && !playerOn && !toastOn && !callOn;
     this.miniGrid.style.opacity = showGrid ? "1" : "0";
+    this.compactStatus.style.opacity = showGrid ? "1" : "0";
     if (showGrid) {
-      const others = State.recentTasks.slice(0, 4);
+      // The ones waiting for you first, then the most recent.
+      const recent = State.recentTasks;
+      const others = [...recent.filter(needsYou), ...recent.filter((t) => !needsYou(t))].slice(0, 4);
       const key = others.map((t) => t.id).join("|");
       if (this.miniGrid.dataset.key !== key) {
         this.miniGrid.dataset.key = key;
         this.miniGrid.replaceChildren();
         for (const t of others) {
-          this.miniGrid.append(createMiniBot(t, 13));
+          this.miniGrid.append(createMiniBot(t, MINI_PX));
         }
         pruneMiniBots();
+        if (this.miniCount !== others.length) {
+          this.miniCount = others.length;
+          this.placeCompactRow(this.width.value, this.height.value);
+        }
       }
+      this.syncCompactStatus();
     }
 
     this.updateDim();
-    this.nowPlaying.sync(compact && !toastOn && !callOn);
+    this.nowPlaying.sync(playerOn);
     this.voiceStrip.sync(callOn);
     this.toasts.sync(compact);
     this.engine.headphones = spotifyPlaying();
@@ -1280,6 +1407,21 @@ export class Island {
     syncMiniBotStates(State.tasks);
     this.engine.setState(State.effectiveState);
     this.reactBigMochi();
+  }
+
+  /** Rewritten only when the words change: it is static text, nothing animates. */
+  private syncCompactStatus() {
+    const task = State.focusTask;
+    const { name, text, tone } = compactStatusOf(task, State.effectiveState);
+    const key = `${name}|${text}|${tone}`;
+    if (key === this.compactStatusKey) return;
+    this.compactStatusKey = key;
+    this.compactStatus.className = `tone-${tone}`;
+    this.compactStatus.replaceChildren(
+      ...(name ? [h("span", { class: "cs-name", text: name })] : []),
+      h("span", { class: "cs-text", text }),
+    );
+    this.compactStatus.title = name ? `${name} · ${text}` : text;
   }
 
   private moodTimer: number | null = null;

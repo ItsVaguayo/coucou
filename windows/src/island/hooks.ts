@@ -7,7 +7,7 @@ import { Bridge, onEvent } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { PROJECT_PALETTE, colorForProject } from "../core/layout";
 import {
-  State, contextShare, type AgentTask, type SessionDetail, type TodoItem, type ToolRun,
+  State, contextShare, type AgentTask, type AskQuestion, type SessionDetail, type TodoItem, type ToolRun,
 } from "../core/state";
 import type { Island } from "./island";
 
@@ -31,6 +31,8 @@ interface HookPayload {
   prompt?: string;
   tool_name?: string;
   tool_input?: Record<string, unknown>;
+  /** PermissionRequest: Claude Code's "don't ask again" options. */
+  permission_suggestions?: unknown;
   tool_use_id?: string;
   transcript_path?: string;
   /** The `claude` process behind the hook (Linux relay only). */
@@ -72,22 +74,25 @@ function lastPathComponent(p: string): string {
   return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
 }
 
-/** frenchStep() — same labels as the macOS app. */
+/** What a tool is doing, as the step line and the compact island show it. */
 const TOOL_LABELS: Record<string, string> = {
-  Bash: "Exécute",
-  Read: "Lit",
-  Write: "Écrit",
-  Edit: "Modifie",
-  Glob: "Cherche",
-  Grep: "Recherche",
-  WebSearch: "Recherche web",
-  WebFetch: "Récupère",
-  TodoWrite: "Tâches",
+  Bash: "Running",
+  Read: "Reading",
+  Write: "Writing",
+  Edit: "Editing",
+  Glob: "Finding",
+  Grep: "Searching",
+  WebSearch: "Searching the web",
+  WebFetch: "Fetching",
+  TodoWrite: "Planning",
   Task: "Agent",
-  LS: "Liste",
-  MultiEdit: "Modifie",
-  NotebookEdit: "Notebook",
-  PowerShell: "Exécute",
+  Agent: "Agent",
+  LS: "Listing",
+  MultiEdit: "Editing",
+  NotebookEdit: "Editing notebook",
+  PowerShell: "Running",
+  AskUserQuestion: "Asking you",
+  ExitPlanMode: "Plan ready",
 };
 
 function stepLabel(tool: string, input: Record<string, unknown>): string {
@@ -121,6 +126,80 @@ const APPROVAL_FIELDS = [
   "pattern", // Glob, Grep
   "prompt", // Task
 ] as const;
+
+/**
+ * Commands that delete, overwrite history or reach outside the project. The card
+ * shows them in red so they are not approved on reflex, and never offers
+ * "Always" for them. A guard for the eye, not a sandbox.
+ */
+const DESTRUCTIVE: RegExp[] = [
+  /\brm\s+(-[a-zA-Z]*[rRf][a-zA-Z]*\b|--recursive|--force)/,
+  /\bgit\s+push\b.*(\s--force\b|\s-f\b|--force-with-lease|\s\+\S)/,
+  /\bgit\s+reset\s+--hard\b/,
+  /\bgit\s+clean\s+-[a-zA-Z]*f/,
+  /\bgit\s+branch\s+-D\b/,
+  /\bgit\s+(checkout|restore)\s+(--\s+)?\.(\s|$)/,
+  /\b(drop\s+(table|database|schema)|truncate\s+table|delete\s+from)\b/i,
+  /\bmkfs(\.\w+)?\b|\bdd\s+if=|>\s*\/dev\/(sd|nvme|disk)/,
+  /\bchmod\s+-R\b|\bchown\s+-R\b/,
+  /\bsudo\b/,
+  /\b(curl|wget)\b[^|]*\|\s*(sudo\s+)?(ba|z)?sh\b/,
+  /\bkill(all)?\s+-9\b/,
+  /\bdocker\s+(system\s+prune|volume\s+rm|rm\s+-f)/,
+  /\bRemove-Item\b.*-Recurse/i,
+];
+
+export function isDestructive(tool: string, input: Record<string, unknown>): boolean {
+  if (tool !== "Bash" && tool !== "PowerShell") return false;
+  const cmd = typeof input.command === "string" ? input.command : "";
+  return DESTRUCTIVE.some((re) => re.test(cmd));
+}
+
+/**
+ * The rule "Always" would add, from Claude Code's own suggestions — only allow
+ * rules kept for the session or in the project's settings.local.json, the same
+ * filter coucou-hook applies. Undefined when none qualifies.
+ */
+function alwaysRuleOf(raw: unknown): string | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const rules: string[] = [];
+  for (const s of raw) {
+    if (!s || typeof s !== "object") continue;
+    const e = s as Record<string, unknown>;
+    if (e.type !== "addRules" || e.behavior !== "allow") continue;
+    if (e.destination !== "session" && e.destination !== "localSettings") continue;
+    for (const r of Array.isArray(e.rules) ? e.rules : []) {
+      const { toolName, ruleContent } = (r ?? {}) as Record<string, unknown>;
+      if (typeof toolName !== "string") continue;
+      rules.push(typeof ruleContent === "string" && ruleContent ? `${toolName}(${ruleContent})` : toolName);
+    }
+  }
+  return rules.length ? rules.join(", ") : undefined;
+}
+
+/** AskUserQuestion's questions, or undefined when the input is not what we expect. */
+function askQuestions(input: Record<string, unknown>): AskQuestion[] | undefined {
+  const raw = input.questions;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  const out: AskQuestion[] = [];
+  for (const q of raw) {
+    if (!q || typeof q !== "object") return undefined;
+    const { question, header, multiSelect, options } = q as Record<string, unknown>;
+    if (typeof question !== "string" || !question || !Array.isArray(options) || options.length === 0) {
+      return undefined;
+    }
+    const opts = options
+      .filter((o): o is Record<string, unknown> => !!o && typeof o === "object")
+      .map((o) => ({
+        label: typeof o.label === "string" ? o.label : "",
+        description: typeof o.description === "string" ? o.description : "",
+      }))
+      .filter((o) => o.label);
+    if (opts.length === 0) return undefined;
+    out.push({ question, header: typeof header === "string" ? header : "", multiSelect: multiSelect === true, options: opts });
+  }
+  return out;
+}
 
 function approvalTarget(tool: string, input: Record<string, unknown>): string {
   for (const field of APPROVAL_FIELDS) {
@@ -634,12 +713,24 @@ export function handleHook(island: Island, payload: HookPayload) {
       if (pendingTimeout != null) window.clearTimeout(pendingTimeout);
       const tool = payload.tool_name ?? "Tool";
       const input = payload.tool_input ?? {};
+      const questions = tool === "AskUserQuestion" ? askQuestions(input) : undefined;
+      // A question the card cannot show (no options, odd shape) goes back to
+      // the terminal: a bare Allow would not answer it.
+      if (tool === "AskUserQuestion" && !questions) {
+        if (requestId) void Bridge.approvalDecline(requestId);
+        break;
+      }
+      const destructive = isDestructive(tool, input);
       State.pendingApproval = {
         requestId,
         sessionId,
         taskId: agentId,
         tool,
-        command: approvalTarget(tool, input),
+        command: questions ? questions[0].question : approvalTarget(tool, input),
+        questions,
+        cwd,
+        destructive,
+        alwaysRule: questions || destructive ? undefined : alwaysRuleOf(payload.permission_suggestions),
       };
       // The relay's short ack window closes in 800 ms; everything below this
       // line is synchronous, so the card really is up by the time it lands.

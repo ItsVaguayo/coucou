@@ -6,7 +6,9 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { Ticker } from "./ticker";
 import { State, contextShare, type AgentTask } from "../core/state";
-import { washRGBA, type IslandViewName, type Wash } from "../core/layout";
+import {
+  APPROVAL_MAX_H, APPROVAL_MIN_H, setApprovalHeight, washRGBA, type IslandViewName, type Wash,
+} from "../core/layout";
 import { createMiniBot, pruneMiniBots, reactMini } from "../mochi/minibots";
 import { buildPrompt } from "./chat";
 import { buildChoose, buildUpload, buildUploading } from "./upload";
@@ -21,7 +23,11 @@ export interface ViewActions {
   /** The ↗ button: opens whatever the focused pill points at. */
   openTarget(): void;
   openUrl(url: string): void;
-  decide(d: "allow" | "deny"): void;
+  decide(d: "allow" | "always" | "deny"): void;
+  /** AskUserQuestion: question text → chosen label(s), joined with commas. */
+  answer(answers: Record<string, string>): void;
+  /** Hands the request back to the terminal (Claude Code asks there). */
+  answerInTerminal(): void;
   toggleSound(): void;
   setVolume(v: number): void;
   setAutoClose(seconds: number): void;
@@ -360,6 +366,11 @@ function buildPill(
   const rest = `${task.color}12`;
   pill.style.background = rest;
   pill.style.borderColor = `${task.color}24`;
+  // The name in the pill's own colour, lightened until it reads (4.5:1) on the wash.
+  const lbl = pill.querySelector<HTMLElement>(".lbl")!;
+  const labelRest = readableOn(task.color, 0x12 / 255, 4.5);
+  const labelHover = readableOn(task.color, 0x2e / 255, 7);
+  lbl.style.color = labelRest;
   // Right-click a Claude Code session: pick the colour of its project.
   pill.addEventListener("contextmenu", (e) => {
     e.preventDefault();
@@ -369,13 +380,13 @@ function buildPill(
     pill.style.background = `${task.color}2e`;
     pill.style.borderColor = `${task.color}8c`;
     pill.style.boxShadow = `0 2px 10px ${task.color}59`;
-    (pill.querySelector(".lbl") as HTMLElement).style.color = lighten(task.color, 0.3);
+    lbl.style.color = labelHover;
   });
   pill.addEventListener("mouseleave", () => {
     pill.style.background = rest;
     pill.style.borderColor = `${task.color}24`;
     pill.style.boxShadow = "";
-    (pill.querySelector(".lbl") as HTMLElement).style.color = "";
+    lbl.style.color = labelRest;
   });
 
   if (task.pillBadge) {
@@ -389,12 +400,44 @@ function buildPill(
   return pill;
 }
 
-function lighten(hex: string, amount: number): string {
-  const v = parseInt(hex.replace("#", ""), 16);
-  const c = [(v >> 16) & 255, (v >> 8) & 255, v & 255].map((x) =>
-    Math.min(255, Math.round(x + amount * 255)),
-  );
-  return `rgb(${c[0]},${c[1]},${c[2]})`;
+/** `/home/me/Claude/coucou/windows` → `~/…/coucou/windows`. */
+function shortPath(p: string): string {
+  const home = p.replace(/^\/(home|Users)\/[^/]+/, "~");
+  const parts = home.split("/").filter(Boolean);
+  return parts.length > 3 ? `${parts[0]}/…/${parts.slice(-2).join("/")}` : home;
+}
+
+const CARD_RGB = [0x14, 0x15, 0x18];
+
+function rgbOf(hex: string): number[] {
+  const v = parseInt(hex.replace("#", "").slice(0, 6), 16);
+  return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+/** WCAG relative luminance. */
+function luminance(c: number[]): number {
+  const [r, g, b] = c.map((x) => {
+    const s = x / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/**
+ * The colour, mixed towards white just enough to reach `ratio` against the card
+ * washed with `wash` of the same colour. A dark project colour used to leave its
+ * pill's name grey on grey.
+ */
+function readableOn(hex: string, wash: number, ratio: number): string {
+  const c = rgbOf(hex);
+  const bg = CARD_RGB.map((x, i) => x + (c[i] - x) * wash);
+  const lb = luminance(bg);
+  for (let t = 0.25; t <= 1.0001; t += 0.05) {
+    const fg = c.map((x) => Math.round(x + (255 - x) * t));
+    const lf = luminance(fg);
+    if ((Math.max(lf, lb) + 0.05) / (Math.min(lf, lb) + 0.05) >= ratio) return `rgb(${fg.join(",")})`;
+  }
+  return "#fff";
 }
 
 // ── Empty ─────────────────────────────────────────────────────────────────────
@@ -417,31 +460,130 @@ function buildEmpty(actions: ViewActions): ViewHost {
 
 // ── Approval ──────────────────────────────────────────────────────────────────
 
-function buildApproval(actions: ViewActions): ViewHost {
+function buildApproval(actions: ViewActions, onHeightChange: () => void): ViewHost {
   const who = h("div");
   const code = h("div", { class: "code" });
+  const list = h("div", { class: "qa-list" });
   const row = h("div", { class: "actions" });
-  const el = h("div", { class: "view" }, card("amber", stack(116, 16, who, code, row)));
+  const body = stack(116, 16, who, code, list, row);
+  const el = h("div", { class: "view" }, card("amber", body));
+  // The buttons are built once per request. Rebuilding them between a
+  // mouse-down and a mouse-up would swallow the click.
   let rowKey = "";
   return {
     el,
     sync() {
+      const req = State.pendingApproval;
+      const questions = req?.questions;
       clear(who);
-      who.append(agentWho(State.focusTask, "needs permission"));
+      const whoRow = agentWho(State.focusTask, questions ? "is asking you" : "needs permission");
+      // Where it runs: the same command means something else in another folder.
+      if (req?.cwd) whoRow.append(h("span", { class: "who-cwd", text: `in ${shortPath(req.cwd)}`, title: req.cwd }));
+      if (req?.destructive) whoRow.append(h("span", { class: "danger-chip", text: "destructive" }));
+      who.append(whoRow);
       // The whole point of approving here rather than in the terminal: this line
       // is the command, the file path or the URL being authorised, not just the
       // name of the tool asking.
-      code.textContent = State.pendingApproval?.command || State.pendingApproval?.tool || "…";
-      // Two buttons, built once. Rebuilding them between a mouse-down and a
-      // mouse-up would swallow the click, and there is nothing left to vary:
-      // "Always" is gone until the remembered-rules list exists to back it.
-      if (rowKey === "built") return;
-      rowKey = "built";
+      code.textContent = req?.command || req?.tool || "…";
+      code.title = code.textContent;
+      code.classList.toggle("danger", !!req?.destructive);
+      code.style.display = questions ? "none" : "";
+      list.style.display = questions ? "" : "none";
+
+      const key = questions ? `q|${req!.requestId}` : `allow|${req?.requestId ?? ""}`;
+      if (rowKey === key) return;
+      rowKey = key;
       clear(row);
-      row.append(
-        btn("Deny", "secondary", () => actions.decide("deny"), "N"),
-        btn("Allow", "primary", () => actions.decide("allow"), "Y"),
-      );
+      clear(list);
+      if (!questions) {
+        row.append(
+          btn("Deny", "secondary", () => actions.decide("deny"), "N"),
+          btn("Allow", "primary", () => actions.decide("allow"), "Y"),
+        );
+        // Claude Code's own "don't ask again", when it offered a rule worth keeping.
+        if (req?.alwaysRule) {
+          const always = btn("Always allow", "secondary", () => actions.decide("always"));
+          always.title = `Allow and remember ${req.alwaysRule} for this project`;
+          row.append(always);
+        }
+        if (setApprovalHeight(APPROVAL_MIN_H)) onHeightChange();
+        return;
+      }
+
+      // One set of picked labels per question; single-choice keeps at most one.
+      const picked = questions.map(() => new Set<string>());
+      const send = btn("Send", "primary", () => {
+        if (!picked.every((p) => p.size > 0)) return;
+        const answers: Record<string, string> = {};
+        questions.forEach((q, i) => {
+          // In the order the options were offered, not the order they were clicked.
+          answers[q.question] = q.options.map((o) => o.label).filter((l) => picked[i].has(l)).join(", ");
+        });
+        actions.answer(answers);
+      });
+      const refresh = () => send.toggleAttribute("disabled", !picked.every((p) => p.size > 0));
+
+      questions.forEach((q, i) => {
+        const opts = h("div", { class: "qa-opts" });
+        for (const o of q.options) {
+          const b = h(
+            "button",
+            { class: "qa-opt", title: o.description },
+            h("span", { class: "qa-label", text: o.label }),
+            o.description ? h("span", { class: "qa-desc", text: o.description }) : null,
+          );
+          b.addEventListener("click", () => {
+            const set = picked[i];
+            if (q.multiSelect) {
+              if (set.has(o.label)) set.delete(o.label);
+              else set.add(o.label);
+            } else {
+              const was = set.has(o.label);
+              set.clear();
+              if (!was) set.add(o.label);
+            }
+            for (const other of opts.children) {
+              const label = other.querySelector(".qa-label")?.textContent ?? "";
+              other.classList.toggle("on", set.has(label));
+            }
+            refresh();
+          });
+          opts.append(b);
+        }
+        list.append(
+          h(
+            "div",
+            { class: "qa" },
+            h(
+              "div",
+              { class: "qa-head" },
+              q.header ? h("span", { class: "qa-chip", text: q.header }) : null,
+              h("span", { class: "qa-q", text: q.question }),
+              q.multiSelect ? h("span", { class: "qa-multi", text: "pick any" }) : null,
+            ),
+            opts,
+          ),
+        );
+      });
+      row.append(btn("Answer in terminal", "secondary", () => actions.answerInTerminal()), send);
+      refresh();
+
+      // As tall as the questions need, up to APPROVAL_MAX_H; past that the list
+      // scrolls. Measured once it is laid out.
+      requestAnimationFrame(() => {
+        if (!el.isConnected) return;
+        // What the island adds around the view (header, margins). Both heights
+        // are read in the same frame, so this holds mid-animation too.
+        const island = el.closest<HTMLElement>("#island");
+        const chrome = island ? island.offsetHeight - el.offsetHeight : 52;
+        // The stack centres its children: its own height says nothing, so add
+        // them up — the card's 1 px border and 4 px padding, top and bottom,
+        // and a 5 px gap between each.
+        const rest = 2 + 8 + who.offsetHeight + row.offsetHeight + 2 * 5;
+        const room = APPROVAL_MAX_H - chrome - rest;
+        list.style.maxHeight = `${Math.max(60, room)}px`;
+        if (setApprovalHeight(chrome + rest + Math.min(list.scrollHeight, room))) onHeightChange();
+      });
     },
   };
 }
@@ -622,7 +764,7 @@ export function buildViews(
   const map = new Map<IslandViewName, ViewHost>();
   map.set("overview", buildOverview(actions));
   map.set("empty", buildEmpty(actions));
-  map.set("approval", buildApproval(actions));
+  map.set("approval", buildApproval(actions, onChatHeightChange));
   map.set("question", buildQuestion());
   map.set("error", buildError(actions));
   map.set("finished", buildFinished(actions));

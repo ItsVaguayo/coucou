@@ -34,6 +34,11 @@ export interface AgentTask {
   detail?: SessionDetail | null;
 }
 
+/** A pill waiting on you: its mini goes first in the compact island and pulses. */
+export function needsYou(t: AgentTask): boolean {
+  return t.state === "approval" || t.state === "question" || t.pillBadge === "approval";
+}
+
 /** One tool call seen between PreToolUse and PostToolUse. */
 export interface ToolRun {
   /** tool_use_id, to pair PostToolUse with its PreToolUse when calls run in parallel. */
@@ -95,6 +100,21 @@ export interface ApprovalInfo {
   taskId: string;
   tool: string;
   command: string;
+  /** AskUserQuestion: the questions, answered right on the card. */
+  questions?: AskQuestion[];
+  /** Folder the session runs in. */
+  cwd?: string;
+  /** Deletes, overwrites or force-pushes: shown in red, and never "Always". */
+  destructive?: boolean;
+  /** What "Always" would remember, e.g. `Bash(npm test:*)`; absent when it is not offered. */
+  alwaysRule?: string;
+}
+
+export interface AskQuestion {
+  question: string;
+  header: string;
+  multiSelect: boolean;
+  options: { label: string; description: string }[];
 }
 
 export interface ChatMessage {

@@ -46,7 +46,7 @@ mod unix;
 use unix::connect;
 
 fn main() {
-    let Some((payload, event)) = read_event() else { std::process::exit(0) };
+    let Some((payload, event, original)) = read_event() else { std::process::exit(0) };
 
     let waits_for_answer = event == "PermissionRequest";
     let budget = if waits_for_answer { DECISION_BUDGET } else { FIRE_AND_FORGET_BUDGET };
@@ -61,7 +61,7 @@ fn main() {
     });
 
     if let Ok(Some(decision)) = rx.recv_timeout(budget) {
-        if let Some(json) = decision_json(&decision) {
+        if let Some(json) = decision_json(&decision, &original) {
             let mut out = std::io::stdout();
             let _ = writeln!(out, "{json}");
             let _ = out.flush();
@@ -71,24 +71,91 @@ fn main() {
     std::process::exit(0);
 }
 
+/// The tool being approved and its input exactly as Claude sent it, before
+/// `truncate_strings` shortened anything for the island.
+struct Original {
+    tool: String,
+    input: serde_json::Value,
+    /// Claude Code's own "don't ask again" options for this request.
+    suggestions: serde_json::Value,
+}
+
+/// The suggestions "Always" may apply: allow rules kept for this session or in
+/// the project's .claude/settings.local.json. Never a mode change (that is how
+/// bypassPermissions would get in) and never the user's own settings file.
+fn always_rules(suggestions: &serde_json::Value) -> Vec<serde_json::Value> {
+    suggestions
+        .as_array()
+        .map(|all| {
+            all.iter()
+                .filter(|s| {
+                    s["type"] == "addRules"
+                        && s["behavior"] == "allow"
+                        && (s["destination"] == "session" || s["destination"] == "localSettings")
+                        && s["rules"].as_array().is_some_and(|r| !r.is_empty())
+                })
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Tools for which a bare allow does nothing: Claude Code wants `updatedInput`
+/// with them, holding the user's answer (AskUserQuestion) or the input itself.
+const NEEDS_UPDATED_INPUT: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
+
 /// The documented PermissionRequest output. Anything we do not recognise prints
 /// nothing at all rather than guessing — silence is the safe answer.
 /// See https://code.claude.com/docs/en/hooks
-fn decision_json(decision: &str) -> Option<String> {
-    let behavior = match decision.trim() {
-        // "always" still answers a plain allow; remembering it is the island's
-        // business, not Claude Code's.
-        "allow" | "always" => r#"{"behavior":"allow"}"#.to_string(),
-        "deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),
-        _ => return None,
+///
+/// Besides `allow` / `deny`, the app may send `answer {"<question>": "<label>"}`
+/// for AskUserQuestion: the answers are added to the original input, which
+/// stays here so a long question never reaches Claude Code cut short.
+fn decision_json(decision: &str, original: &Original) -> Option<String> {
+    let decision = decision.trim();
+    let behavior = if let Some(answers) = decision.strip_prefix("answer ") {
+        if original.tool != "AskUserQuestion" {
+            return None;
+        }
+        let answers = serde_json::from_str::<serde_json::Value>(answers).ok()?;
+        let all_strings = answers.as_object()?.values().all(|v| v.is_string());
+        if !all_strings || answers.as_object()?.is_empty() {
+            return None;
+        }
+        let mut input = original.input.as_object()?.clone();
+        input.insert("answers".into(), answers);
+        serde_json::json!({ "behavior": "allow", "updatedInput": input }).to_string()
+    } else {
+        match decision {
+            // An answer is the only way to allow a question; a bare allow would
+            // leave Claude Code waiting in the terminal anyway.
+            "allow" | "always" if original.tool == "AskUserQuestion" => return None,
+            "allow" | "always" if NEEDS_UPDATED_INPUT.contains(&original.tool.as_str()) => {
+                serde_json::json!({ "behavior": "allow", "updatedInput": original.input }).to_string()
+            }
+            // "Always": the allow rules Claude Code itself offered, or a plain allow
+            // when it offered none we accept.
+            "always" => {
+                let rules = always_rules(&original.suggestions);
+                if rules.is_empty() {
+                    r#"{"behavior":"allow"}"#.to_string()
+                } else {
+                    serde_json::json!({ "behavior": "allow", "updatedPermissions": rules }).to_string()
+                }
+            }
+            "allow" => r#"{"behavior":"allow"}"#.to_string(),
+            "deny" => r#"{"behavior":"deny","message":"Denied from Coucou"}"#.to_string(),
+            _ => return None,
+        }
     };
     Some(format!(
         r#"{{"hookSpecificOutput":{{"hookEventName":"PermissionRequest","decision":{behavior}}}}}"#
     ))
 }
 
-/// Reads stdin and returns the payload to forward plus the event name.
-fn read_event() -> Option<(String, String)> {
+/// Reads stdin and returns the payload to forward, the event name, and the
+/// untouched tool input.
+fn read_event() -> Option<(String, String, Original)> {
     let mut raw = Vec::new();
     if std::io::stdin().read_to_end(&mut raw).is_err() || raw.is_empty() {
         return None;
@@ -99,6 +166,11 @@ fn read_event() -> Option<(String, String)> {
     }
 
     let mut payload = serde_json::from_slice::<serde_json::Value>(&raw).ok()?;
+    let original = Original {
+        tool: payload.get("tool_name").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        input: payload.get("tool_input").cloned().unwrap_or(serde_json::Value::Null),
+        suggestions: payload.get("permission_suggestions").cloned().unwrap_or(serde_json::Value::Null),
+    };
     let map = payload.as_object_mut()?;
 
     // Parse argv: "coucou-hook.exe [--agent <name>] [<EventName>]"
@@ -173,7 +245,7 @@ fn read_event() -> Option<(String, String)> {
 
     let mut line = payload.to_string();
     line.push('\n');
-    Some((line, event))
+    Some((line, event, original))
 }
 
 /// Walks up from our parent to the first process that is Claude Code: `claude`
@@ -258,26 +330,95 @@ fn talk(payload: &str, waits_for_answer: bool) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn bash() -> Original {
+        Original { tool: "Bash".into(), input: serde_json::json!({ "command": "ls" }), suggestions: serde_json::Value::Null }
+    }
+
+    fn question() -> Original {
+        Original {
+            tool: "AskUserQuestion".into(),
+            input: serde_json::json!({ "questions": [{
+                "question": "Which framework?", "header": "Framework", "multiSelect": false,
+                "options": [{ "label": "React", "description": "x" }, { "label": "Vue", "description": "y" }],
+            }] }),
+            suggestions: serde_json::Value::Null,
+        }
+    }
+
     #[test]
     fn decision_json_matches_the_documented_shape() {
         assert_eq!(
-            decision_json("allow").unwrap(),
+            decision_json("allow", &bash()).unwrap(),
             r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
         );
         assert_eq!(
-            decision_json("deny").unwrap(),
+            decision_json("deny", &bash()).unwrap(),
             r#"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Coucou"}}}"#
         );
         // "always" is an island concept; Claude Code just gets an allow.
-        assert!(decision_json("always").unwrap().contains(r#""behavior":"allow""#));
+        assert!(decision_json("always", &bash()).unwrap().contains(r#""behavior":"allow""#));
     }
 
     #[test]
     fn anything_unrecognised_prints_nothing() {
-        assert!(decision_json("").is_none());
-        assert!(decision_json("maybe").is_none());
+        assert!(decision_json("", &bash()).is_none());
+        assert!(decision_json("maybe", &bash()).is_none());
         // The shape the app used to send must not be mistaken for a decision.
-        assert!(decision_json(r#"{"permissionDecision":"allow"}"#).is_none());
+        assert!(decision_json(r#"{"permissionDecision":"allow"}"#, &bash()).is_none());
+    }
+
+    #[test]
+    fn a_question_is_answered_with_the_original_input_plus_answers() {
+        let out = decision_json(r#"answer {"Which framework?":"React"}"#, &question()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let d = &v["hookSpecificOutput"]["decision"];
+        assert_eq!(d["behavior"], "allow");
+        assert_eq!(d["updatedInput"]["answers"]["Which framework?"], "React");
+        assert_eq!(d["updatedInput"]["questions"][0]["options"][1]["label"], "Vue");
+    }
+
+    #[test]
+    fn a_question_is_never_allowed_without_answers() {
+        assert!(decision_json("allow", &question()).is_none());
+        assert!(decision_json("answer {}", &question()).is_none());
+        assert!(decision_json("answer nope", &question()).is_none());
+        assert!(decision_json(r#"answer {"q":1}"#, &question()).is_none());
+        // Answers only make sense for a question.
+        assert!(decision_json(r#"answer {"q":"a"}"#, &bash()).is_none());
+        // Deny still works.
+        assert!(decision_json("deny", &question()).unwrap().contains(r#""behavior":"deny""#));
+    }
+
+    #[test]
+    fn plan_approval_echoes_the_untruncated_input() {
+        let plan = "p".repeat(5000);
+        let o = Original { tool: "ExitPlanMode".into(), input: serde_json::json!({ "plan": plan }), suggestions: serde_json::Value::Null };
+        let v: serde_json::Value = serde_json::from_str(&decision_json("allow", &o).unwrap()).unwrap();
+        assert_eq!(v["hookSpecificOutput"]["decision"]["updatedInput"]["plan"].as_str().unwrap().len(), 5000);
+    }
+
+    #[test]
+    fn always_applies_only_safe_allow_rules() {
+        let o = Original {
+            tool: "Bash".into(),
+            input: serde_json::json!({ "command": "npm test" }),
+            suggestions: serde_json::json!([
+                { "type": "addRules", "rules": [{ "toolName": "Bash", "ruleContent": "npm test:*" }], "behavior": "allow", "destination": "localSettings" },
+                { "type": "setMode", "mode": "bypassPermissions", "destination": "session" },
+                { "type": "addRules", "rules": [{ "toolName": "Bash" }], "behavior": "allow", "destination": "userSettings" },
+            ]),
+        };
+        let v: serde_json::Value = serde_json::from_str(&decision_json("always", &o).unwrap()).unwrap();
+        let d = &v["hookSpecificOutput"]["decision"];
+        assert_eq!(d["behavior"], "allow");
+        let up = d["updatedPermissions"].as_array().unwrap();
+        assert_eq!(up.len(), 1);
+        assert_eq!(up[0]["rules"][0]["ruleContent"], "npm test:*");
+        // Nothing acceptable offered: a plain allow, no rules.
+        let plain = decision_json("always", &bash()).unwrap();
+        assert!(!plain.contains("updatedPermissions"));
+        // A plain allow never carries rules, even when some were offered.
+        assert!(!decision_json("allow", &o).unwrap().contains("updatedPermissions"));
     }
 
     #[test]

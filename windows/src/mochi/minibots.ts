@@ -1,9 +1,9 @@
 // Mini Mochis (pills + compact grid) — port of MiniBotCanvasView.
 // Each canvas owns a BotEngine; the island's frame loop ticks every live one.
 
-import { BotEngine, asAccessory, hexToRGB, moodsFor, randomMood, type Accessory, type MiniReaction } from "./engine";
+import { BotEngine, asAccessory, hexToRGB, moodsFor, randomMood, type Accessory, type AgentMark, type MiniReaction } from "./engine";
 import type { BotStateName } from "../core/layout";
-import { State, type AgentTask } from "../core/state";
+import { State, needsYou, type AgentTask } from "../core/state";
 
 interface MiniBot {
   canvas: HTMLCanvasElement;
@@ -12,7 +12,12 @@ interface MiniBot {
   taskId: string;
   /** Canvas pixels per CSS pixel it was allocated with. */
   dpr: number;
+  /** Waiting on you: a ring pulses round her in the compact island. */
+  attention: boolean;
 }
+
+/** One pulse of the attention ring, in seconds. */
+const RING_PERIOD = 1.4;
 
 /** Scale the compact island is drawn at; the grid's minis are enlarged by it. */
 let gridScale = 1;
@@ -57,6 +62,17 @@ const shownState = (t: AgentTask): BotStateName => (dozing(t) ? "sleeping" : t.s
 export const accessoryOf = (t: AgentTask): Accessory =>
   isSession(t) ? asAccessory(State.settings.mochiAccessories?.[t.sessionId!]) : "none";
 
+/** Which agent a pill follows, for the antenna on its Mochi; null for integrations. */
+export function agentMarkOf(t: AgentTask | null): AgentMark | null {
+  if (!t) return null;
+  if (t.source === "claudeCode") return "claude";
+  if (t.source !== "agent") return null;
+  const name = t.id.replace(/^agent_/, "");
+  if (name.includes("codex")) return "codex";
+  if (name.includes("gemini")) return "gemini";
+  return "agent";
+}
+
 export const REACTION: Partial<Record<BotStateName, MiniReaction>> = {
   finished: "done",
   approval: "ask",
@@ -91,6 +107,8 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
   engine.isMini = true;
   engine.bodyColor = hexToRGB(task.color);
   engine.accessory = accessoryOf(task);
+  engine.agentMark = agentMarkOf(task);
+  engine.agentMarkColor = task.color;
   engine.wumpus = task.id === "integration_discord";
   engine.setState(shownState(task), true);
   if (task.emote) engine.setPermanentEmote(task.emote);
@@ -100,7 +118,7 @@ export function createMiniBot(task: AgentTask, bodySize: number): HTMLElement {
     engine.eyeOverrideUntil = Number.POSITIVE_INFINITY;
   }
 
-  live.set(canvas, { canvas, engine, cssSize: engineSize, taskId: task.id, dpr });
+  live.set(canvas, { canvas, engine, cssSize: engineSize, taskId: task.id, dpr, attention: needsYou(task) });
   if (isSession(task) && !greeted.has(task.id)) {
     greeted.add(task.id);
     // A session first heard from right now comes in with a hop; one already
@@ -146,8 +164,11 @@ export function syncMiniBotStates(tasks: AgentTask[]) {
     const task = tasks.find((t) => t.id === mb.taskId);
     if (!task) continue;
     if (!task.leaving) mb.engine.setState(shownState(task));
+    mb.attention = needsYou(task);
     mb.engine.bodyColor = hexToRGB(task.color);
     mb.engine.accessory = accessoryOf(task);
+    mb.engine.agentMark = agentMarkOf(task);
+    mb.engine.agentMarkColor = task.color;
     const reaction = changed.get(task.id);
     if (reaction) mb.engine.miniReact(reaction);
   }
@@ -215,7 +236,35 @@ export function tickMiniBots(dt: number) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, mb.cssSize, mb.cssSize);
     mb.engine.draw(ctx, mb.cssSize, mb.cssSize);
+    if (mb.attention && inGrid(mb.canvas)) drawAttentionRing(ctx, mb.cssSize);
   }
+}
+
+function inGrid(canvas: HTMLCanvasElement): boolean {
+  return canvas.closest("#mini-grid") != null;
+}
+
+/**
+ * Amber ring round a compact-island mini waiting on you. Drawn on her own
+ * canvas rather than as a CSS animation: WebKitGTK repaints a CSS animation even
+ * when nothing else moves, and the island along with it.
+ */
+function drawAttentionRing(ctx: CanvasRenderingContext2D, size: number) {
+  const t = (performance.now() / 1000 / RING_PERIOD) % 1;
+  const pulse = 0.5 - 0.5 * Math.cos(t * Math.PI * 2);
+  ctx.save();
+  ctx.strokeStyle = `rgba(245,165,36,${(0.35 + 0.55 * pulse).toFixed(3)})`;
+  ctx.lineWidth = size * 0.045;
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size * (0.34 + 0.03 * pulse), 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** A mini in the compact island is waiting on you, so the loop keeps its ring pulsing. */
+export function miniBotsNeedAttention(): boolean {
+  for (const mb of live.values()) if (mb.attention && onScreen(mb.canvas) && inGrid(mb.canvas)) return true;
+  return false;
 }
 
 export const miniBotCount = () => live.size;

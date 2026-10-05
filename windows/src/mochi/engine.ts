@@ -45,6 +45,9 @@ export function asAccessory(id: string | undefined): Accessory {
   return (ACCESSORIES as readonly string[]).includes(id ?? "") ? (id as Accessory) : "none";
 }
 
+/** A small antenna saying which agent this Mochi follows. */
+export type AgentMark = "claude" | "codex" | "gemini" | "agent";
+
 export type MiniReaction ="done" | "ask" | "fail" | "hover" | "press" | "hello" | "bye";
 
 /** Gestures a Mochi makes for no reason at all, now and then. */
@@ -225,6 +228,10 @@ export class BotEngine {
   wumpus = false;
   /** What she wears: glasses or something on her head (drawn in code like the rest). */
   accessory: Accessory = "none";
+  /** Which agent she follows; null for integrations. A hat hides it. */
+  agentMark: AgentMark | null = null;
+  /** Bulb colour for an agent without a mark of its own. */
+  agentMarkColor = "#9aa0aa";
 
   // Animated state (BotEngine `s`)
   yaw = 0; pitch = 0; roll = 0; tilt = 0; open = 1;
@@ -929,6 +936,8 @@ export class BotEngine {
       x.restore();
     }
     if (this.accessory !== "none" && this.morph < 0.5) this.drawAccessory(x, R, rx, ry);
+    const hat = this.accessory !== "none" && this.accessory !== "glasses" && this.accessory !== "sunglasses";
+    if (this.agentMark && !hat && !this.wumpus && this.morph < 0.5) this.drawAgentMark(x, R, rx, ry);
 
     x.restore();
 
@@ -1056,6 +1065,84 @@ export class BotEngine {
       x.beginPath();
       x.roundRect(cxp - cw * 0.22 + sd * cw * 0.12, cyp - ch * 0.32, cw * 0.44, ch * 0.64, cw * 0.22);
       x.fill();
+    }
+    x.restore();
+  }
+
+  /**
+   * A short antenna on top of her head, tipped with the agent's mark: Claude's
+   * spark, Gemini's four-point star, a terminal tile for Codex, a bulb in the
+   * agent's colour for the rest. It turns with her head like the hats do.
+   */
+  private drawAgentMark(x: CanvasRenderingContext2D, R: number, rx: number, ry: number) {
+    x.save();
+    x.globalAlpha = 1 - this.morph * 2;
+    x.translate(Math.sin(this.yaw) * rx * 0.3, -ry * 0.86);
+    x.rotate(Math.sin(this.yaw) * 0.18);
+    const tip = -ry * 0.46;
+    x.strokeStyle = "rgba(20,22,26,0.55)";
+    x.lineWidth = Math.max(0.8, R * 0.05);
+    x.lineCap = "round";
+    x.beginPath();
+    x.moveTo(0, 0);
+    x.quadraticCurveTo(R * 0.05, tip * 0.5, 0, tip);
+    x.stroke();
+    x.translate(0, tip);
+    switch (this.agentMark) {
+      case "claude": {
+        x.strokeStyle = "#d97757";
+        x.lineWidth = Math.max(0.9, R * 0.065);
+        const len = R * 0.17;
+        for (let i = 0; i < 8; i++) {
+          const a = (i * Math.PI) / 4;
+          const l = i % 2 ? len * 0.72 : len;
+          x.beginPath();
+          x.moveTo(Math.cos(a) * len * 0.18, Math.sin(a) * len * 0.18);
+          x.lineTo(Math.cos(a) * l, Math.sin(a) * l);
+          x.stroke();
+        }
+        break;
+      }
+      case "gemini": {
+        const s = R * 0.2;
+        const g = x.createLinearGradient(-s, -s, s, s);
+        g.addColorStop(0, "#4f8df7");
+        g.addColorStop(1, "#a06cf0");
+        x.fillStyle = g;
+        x.beginPath();
+        x.moveTo(0, -s);
+        x.quadraticCurveTo(0, 0, s, 0);
+        x.quadraticCurveTo(0, 0, 0, s);
+        x.quadraticCurveTo(0, 0, -s, 0);
+        x.quadraticCurveTo(0, 0, 0, -s);
+        x.fill();
+        break;
+      }
+      case "codex": {
+        const s = R * 0.15;
+        x.fillStyle = "#1c1f24";
+        x.beginPath();
+        x.roundRect(-s, -s, s * 2, s * 2, s * 0.35);
+        x.fill();
+        x.strokeStyle = "#f2f3f5";
+        x.lineWidth = Math.max(0.7, R * 0.04);
+        x.beginPath();
+        x.moveTo(-s * 0.45, -s * 0.4);
+        x.lineTo(s * 0.05, 0);
+        x.lineTo(-s * 0.45, s * 0.4);
+        x.stroke();
+        break;
+      }
+      default: {
+        x.fillStyle = this.agentMarkColor;
+        x.beginPath();
+        x.arc(0, 0, R * 0.11, 0, Math.PI * 2);
+        x.fill();
+        x.fillStyle = "rgba(255,255,255,0.55)";
+        x.beginPath();
+        x.arc(-R * 0.035, -R * 0.035, R * 0.035, 0, Math.PI * 2);
+        x.fill();
+      }
     }
     x.restore();
   }

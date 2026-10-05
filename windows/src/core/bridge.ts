@@ -101,8 +101,11 @@ export const Bridge = {
   hooksApply: (install: boolean, fingerprint: string) =>
     callOrThrow<string>("hooks_apply", { install, fingerprint }),
 
-  approvalDecision: (requestId: string, decision: "allow" | "deny") =>
+  approvalDecision: (requestId: string, decision: "allow" | "always" | "deny") =>
     call<void>("approval_decision", { requestId, decision }),
+  /** AskUserQuestion: question text → chosen label(s), joined with commas. */
+  approvalAnswer: (requestId: string, answers: Record<string, string>) =>
+    call<void>("approval_answer", { requestId, answers }),
   /** "The card is up" — until this lands the relay only waits a moment. */
   approvalAck: (requestId: string) => call<void>("approval_ack", { requestId }),
   /** "Nobody can act on this" — Claude Code asks in the terminal right away. */

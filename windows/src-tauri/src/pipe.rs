@@ -289,9 +289,28 @@ pub fn decline(app: &AppHandle, request_id: &str) {
 /// it into Claude Code's JSON is coucou-hook's job.
 pub fn answer(app: &AppHandle, request_id: &str, decision: &str) {
     let word = match decision {
-        "allow" | "always" => "allow",
+        "allow" => "allow",
+        // coucou-hook turns this into an allow plus Claude Code's own allow rule.
+        "always" => "always",
         _ => "deny",
     };
     log::line(format!("decision id={request_id} {word}"));
     send(app, request_id, Reply::Decision(word.to_string()), false);
+}
+
+/// The island's answer to an AskUserQuestion: question text → chosen label(s),
+/// several labels joined with commas. coucou-hook adds it to the original input.
+/// Anything but an object of strings is dropped, and the terminal asks instead.
+pub fn answer_question(app: &AppHandle, request_id: &str, answers: &serde_json::Value) {
+    let valid = answers
+        .as_object()
+        .is_some_and(|m| !m.is_empty() && m.values().all(|v| v.is_string()));
+    if !valid {
+        log::line(format!("answer id={request_id} malformed — terminal takes over"));
+        send(app, request_id, Reply::Decline, false);
+        return;
+    }
+    log::line(format!("decision id={request_id} answer ({} question(s))", answers.as_object().map_or(0, |m| m.len())));
+    // Compact JSON has no newline, and the pipe protocol is one line.
+    send(app, request_id, Reply::Decision(format!("answer {answers}")), false);
 }

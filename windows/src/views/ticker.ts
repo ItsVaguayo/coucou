@@ -66,7 +66,10 @@ function place(row: Row, y: number, phase: number, opacity: number) {
   row.el.style.opacity = String(opacity);
   row.chevron.style.opacity = String(clamp(1 - phase * 2, 0, 1));
   row.check.style.opacity = String(clamp(phase * 2 - 1, 0, 1));
-  row.shimmer.style.opacity = String(clamp(1 - phase * 1.6, 0, 1));
+  const shimmer = clamp(1 - phase * 1.6, 0, 1);
+  row.shimmer.style.opacity = String(shimmer);
+  // A faded-out shimmer still swept on, and WebKitGTK repainted it every frame.
+  row.shimmer.style.animationPlayState = shimmer > 0 && opacity > 0 ? "" : "paused";
   row.dim.style.opacity = String(clamp(phase * 2 - 0.4, 0, 1));
 }
 

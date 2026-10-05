@@ -6,6 +6,7 @@ import { onEvent, Bridge, type IntegrationUpdate } from "../core/bridge";
 import { Sound } from "../core/sound";
 import { State } from "../core/state";
 import type { Island } from "./island";
+import { syncSpotifyColor } from "../views/nowplaying";
 
 /** Which Credential Manager key backs each pill. */
 const KEY_FOR: Record<string, string> = {
@@ -53,6 +54,8 @@ function handle(island: Island, update: IntegrationUpdate) {
     loaded: update.error ? (previous?.loaded ?? false) : true,
     configured: previous?.configured ?? true,
   };
+
+  if (update.id === "integration_spotify") syncSpotifyColor();
 
   // A song starting wakes the compact island, which then stays up while it plays.
   if (

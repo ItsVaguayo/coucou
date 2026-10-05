@@ -74,6 +74,7 @@ async function main() {
 
   registerHookHandlers(island);
   registerIntegrationHandlers(island);
+  watchForWake();
 
   island.launch();
 
@@ -89,3 +90,29 @@ async function main() {
 }
 
 void main();
+
+
+/**
+ * Notes in the log when the computer comes back from sleep, with the page's
+ * frame rate for three seconds after: if the island ever crawls after a suspend
+ * again, the log says whether the page itself is slow or only the screen is.
+ * The wall clock runs through a suspend, the monotonic one does not.
+ */
+function watchForWake() {
+  let wall = Date.now();
+  let mono = performance.now();
+  window.setInterval(() => {
+    const slept = Date.now() - wall - (performance.now() - mono);
+    wall = Date.now();
+    mono = performance.now();
+    if (slept < 10_000) return;
+    let frames = 0;
+    const start = performance.now();
+    const count = () => {
+      frames++;
+      if (performance.now() - start < 3000) requestAnimationFrame(count);
+      else void Bridge.log(`woke after ${Math.round(slept / 1000)} s asleep; page ran ${Math.round(frames / 3)} fps`);
+    };
+    requestAnimationFrame(count);
+  }, 5000);
+}

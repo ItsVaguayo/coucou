@@ -68,6 +68,23 @@ pub fn prepare_environment() {
     if std::env::var_os("WEBKIT_SKIA_ENABLE_CPU_RENDERING").is_none() {
         std::env::set_var("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1");
     }
+    // With NVIDIA's own driver loaded, frames handed over as DMA-BUFs reached the
+    // screen once every second or two while the page drew sixty: the island
+    // looked frozen. Plain shared memory has no such stall.
+    if std::path::Path::new("/proc/driver/nvidia").exists()
+        && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none()
+    {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    // After a suspend NVIDIA's GL contexts came back unusable: the page drew a
+    // dozen frames a second with its main thread busy, until it was reloaded.
+    // Without compositing mode WebKit uses no GL (canvases included), and with
+    // Skia on the CPU it measured the same: ~45 updates/s, ~15 % CPU expanded.
+    if std::path::Path::new("/proc/driver/nvidia").exists()
+        && std::env::var_os("WEBKIT_DISABLE_COMPOSITING_MODE").is_none()
+    {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+    }
     if std::env::var_os("APPIMAGE").is_none() || std::env::var_os("GST_REGISTRY").is_some() {
         return;
     }

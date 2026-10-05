@@ -8,6 +8,7 @@ import { h, svg, clear, dot } from "./dom";
 import { ICONS } from "./icons";
 import { State, type AgentTask } from "../core/state";
 import { Bridge } from "../core/bridge";
+import { SPOTIFY_GREEN, spotifyPosition } from "./nowplaying";
 
 /** Same shape as the Swift `timeAgo` computed properties. */
 export function timeAgo(value: unknown): string {
@@ -431,12 +432,7 @@ function mmss(ms: number): string {
 function spotifyCard(): HTMLElement {
   const d = get("integration_spotify");
   const playing = d.playing === true;
-  const length = Number(d.lengthMs ?? 0);
-  const base = Number(d.positionMs ?? 0);
-  const at = Number(d.at ?? Date.now());
-  // Spotify only reports the position on a change; between changes the bar
-  // runs on the clock.
-  const position = () => Math.min(length, playing ? base + (Date.now() - at) : base);
+  const color = State.tasks.find((t) => t.id === "integration_spotify")?.color ?? SPOTIFY_GREEN;
 
   const art = d.art
     ? h("img", { class: "sp-art", src: String(d.art), alt: "" })
@@ -444,18 +440,18 @@ function spotifyCard(): HTMLElement {
   const fill = h("i", { class: "sp-fill" });
   const elapsed = h("span", { class: "sp-time" });
   const paint = () => {
-    const p = position();
-    fill.style.width = length > 0 ? `${(p / length) * 100}%` : "0";
-    elapsed.textContent = mmss(p);
+    const { at, length } = spotifyPosition(d);
+    fill.style.width = length > 0 ? `${(at / length) * 100}%` : "0";
+    elapsed.textContent = mmss(at);
   };
   paint();
 
-  const btn = (icon: string, action: "toggle" | "next" | "previous", title: string, size = 10) =>
-    h("button", { class: "sp-btn", title, onclick: () => void Bridge.mediaControl(action) }, svg(icon, size));
+  const btn = (icon: string, action: "toggle" | "next" | "previous", title: string, size = 11, cls = "sp-btn") =>
+    h("button", { class: cls, title, onclick: () => void Bridge.mediaControl(action) }, svg(icon, size));
 
   const card = h(
     "div",
-    { class: "int-card" },
+    { class: "int-card sp" },
     header("#1DB954", "Spotify", playing ? "Playing" : "Paused"),
     h(
       "div",
@@ -464,25 +460,29 @@ function spotifyCard(): HTMLElement {
       h(
         "div",
         { class: "sp-text" },
-        h("span", { class: "sp-title", text: String(d.title || "—") }),
+        h("span", { class: "sp-title", text: String(d.title || "—"), title: String(d.title || "") }),
         h("span", { class: "sp-artist", text: String(d.artist ?? "") }),
+        h(
+          "div",
+          { class: "sp-progress" },
+          elapsed,
+          h("div", { class: "sp-bar" }, fill),
+          h("span", { class: "sp-time", text: mmss(Number(d.lengthMs ?? 0)) }),
+        ),
       ),
-    ),
-    h(
-      "div",
-      { class: "sp-progress" },
-      elapsed,
-      h("div", { class: "sp-bar" }, fill),
-      h("span", { class: "sp-time", text: mmss(length) }),
     ),
     h(
       "div",
       { class: "sp-controls" },
       btn(ICONS.previous, "previous", "Previous"),
-      btn(playing ? ICONS.pause : ICONS.play, "toggle", playing ? "Pause" : "Play", 12),
+      btn(playing ? ICONS.pause : ICONS.play, "toggle", playing ? "Pause" : "Play", 12, "sp-btn sp-play"),
       btn(ICONS.next, "next", "Next"),
     ),
   );
+  // The cover's colour: a glow from the corner, the bar and the play button.
+  card.style.setProperty("--sp-color", color);
+  card.style.setProperty("--sp-wash", `${color}38`);
+  card.classList.toggle("paused", !playing);
 
   if (playing) {
     const timer = window.setInterval(() => {
